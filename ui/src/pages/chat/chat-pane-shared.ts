@@ -152,8 +152,6 @@ export type ChatPaneConnectionScope = {
   headerOutcomeOwner: string;
   sessions: ApplicationContext["sessions"];
 };
-const CHAT_OPEN_DETAILS_SELECTOR =
-  ".chat-controls__inline-select[open]:not([data-chat-native-picker]), .context-usage details[open]:not([data-chat-native-picker])";
 export const CHAT_COMPOSER_TEXTAREA_SELECTOR = ".agent-chat__composer-combobox > textarea";
 // Menus without typeahead own activation/navigation, not printable input.
 // Keeping those key classes separate prevents an open menu from silently dropping a letter.
@@ -161,22 +159,12 @@ const CHAT_PRINTABLE_KEY_TARGET_SELECTOR =
   "input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='combobox'], [role='textbox'], [data-chat-autotype-exempt]";
 const CHAT_SPACE_ACTIVATION_SELECTOR =
   "a[href], button, summary, [role='button'], [role='checkbox'], [role='link'], [role='listbox'], [role='menu'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='radio'], [role='switch'], [role='tab']";
-const CHAT_DROPDOWN_KEYS = new Set([
-  " ",
-  "Enter",
-  "ArrowDown",
-  "ArrowLeft",
-  "ArrowRight",
-  "ArrowUp",
-  "Escape",
-]);
-
 // Shortcut menus own only advertised, enabled keys; every other printable key
 // can still transfer to the composer through the normal browser input pipeline.
 function keyboardShortcutTargetOwnsKey(target: HTMLElement, key: string): boolean {
   return (
     /^[a-z0-9]$/iu.test(key) &&
-    (target.matches("wa-dropdown, [data-chat-autotype-shortcuts][open]") ||
+    (target.matches("[data-chat-autotype-shortcuts][open]") ||
       (target.matches('[role="menu"][popover]') && target.matches(":popover-open"))) &&
     target.querySelector(`[data-shortcut="${key.toLowerCase()}"]:not([disabled])`) !== null
   );
@@ -201,34 +189,14 @@ function keyboardEventPathHasInteractiveTarget(event: KeyboardEvent): boolean {
     );
 }
 
-function openDropdownOwnsKey(root: ParentNode, key: string): boolean {
+function openMenuOwnsKey(root: ParentNode, key: string): boolean {
   const surface = root instanceof Element ? (root.closest("openclaw-app") ?? root) : root;
-  return [
-    ...surface.querySelectorAll<HTMLElement & { open?: boolean }>(
-      'wa-dropdown, [role="menu"][popover]',
-    ),
-  ].some(
-    (dropdown) =>
-      (dropdown.open === true ||
-        (dropdown.hasAttribute("popover") && dropdown.matches(":popover-open"))) &&
-      !dropdown.closest("[inert]") &&
-      (CHAT_DROPDOWN_KEYS.has(key) || keyboardShortcutTargetOwnsKey(dropdown, key)),
+  return [...surface.querySelectorAll<HTMLElement>('[role="menu"][popover]')].some(
+    (menu) =>
+      menu.matches(":popover-open") &&
+      !menu.closest("[inert]") &&
+      (key === " " || keyboardShortcutTargetOwnsKey(menu, key)),
   );
-}
-
-/** Close this pane's disclosures, except those containing the current pointer event. */
-export function closeChatPaneDetails(
-  root: ParentNode,
-  retainedPath: readonly EventTarget[] = [],
-): boolean {
-  let changed = false;
-  root.querySelectorAll<HTMLDetailsElement>(CHAT_OPEN_DETAILS_SELECTOR).forEach((details) => {
-    if (!retainedPath.includes(details)) {
-      details.open = false;
-      changed = true;
-    }
-  });
-  return changed;
 }
 
 export function focusChatComposerFromPrintableKeydown(
@@ -241,7 +209,7 @@ export function focusChatComposerFromPrintableKeydown(
     event.metaKey ||
     event.ctrlKey ||
     event.altKey ||
-    openDropdownOwnsKey(root, event.key) ||
+    openMenuOwnsKey(root, event.key) ||
     event.key.length !== 1 ||
     keyboardEventPathHasInteractiveTarget(event) ||
     document.openClawModalLayers?.size ||

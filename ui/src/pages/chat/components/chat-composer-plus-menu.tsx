@@ -40,7 +40,6 @@ import {
   renderCapabilityToggleRow,
   menuDivider,
 } from "./chat-composer-menu-rows.tsx";
-import { closeOtherChatComposerPickers } from "./chat-picker-overlay.ts";
 
 registerEnglishCatalog(registerMcpEnglish);
 
@@ -423,7 +422,7 @@ function handleMenuSelection(
   const value = item.id;
   if (
     uploadsEnabled(props.attachments.uploadConfig) &&
-    handleChatAttachmentMenuSelection({ currentTarget: surface, detail: { item: { value } } })
+    handleChatAttachmentMenuSelection(surface, value)
   ) {
     return;
   }
@@ -602,7 +601,6 @@ function PlusMenuSurface(props: { menu: ChatComposerPlusMenuContentProps }) {
               handleMenuSelection(item, event, handle.overlay.surface, props.menu);
             }
           }}
-          onBeforeShow={() => closeOtherChatComposerPickers(host)}
           onNavigate={({ value }) =>
             props.menu.onNavigate(value === "manage-skills" ? "skills" : "plugins")
           }

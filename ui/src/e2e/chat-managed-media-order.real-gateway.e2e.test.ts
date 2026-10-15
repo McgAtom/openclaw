@@ -419,6 +419,7 @@ suite.define(() => {
                   });
                   throw error;
                 }
+                // History reconciliation can replace the nodes that just finished decoding.
                 await expect
                   .poll(() =>
                     bubble

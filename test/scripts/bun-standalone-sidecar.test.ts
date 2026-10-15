@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  planStandaloneRuntime,
   pruneStandaloneRuntime,
   standaloneResourceCategory,
 } from "../../scripts/lib/bun-standalone-sidecar.mjs";
@@ -99,13 +100,16 @@ describe("standalone resource allowlist", () => {
       "node_modules/.pnpm/native@1/node_modules/native/index.js",
     ]);
     fs.symlinkSync(".pnpm/native@1/node_modules/native", path.join(runtime, "node_modules/native"));
-    const result = pruneStandaloneRuntime(runtime, [
+    const plan = planStandaloneRuntime(runtime, [
       {
         source: "node_modules/native/addon.node",
         destination: "native/native@1/addon.node",
         category: "nativeAddons",
       },
     ]);
+    expect(fs.existsSync(path.join(runtime, "node_modules"))).toBe(true);
+    expect(fs.existsSync(path.join(runtime, "dist/entry.js"))).toBe(true);
+    const result = pruneStandaloneRuntime(plan);
     expect(fs.existsSync(path.join(runtime, "node_modules"))).toBe(false);
     expect(fs.existsSync(path.join(runtime, "dist/entry.js"))).toBe(false);
     expect(fs.existsSync(path.join(runtime, "dist/extensions/example/index.js"))).toBe(false);
@@ -138,7 +142,7 @@ describe("standalone resource allowlist", () => {
     fs.writeFileSync(path.join(path.dirname(runtime), "outside.node"), "outside");
     fs.symlinkSync("../outside.node", path.join(runtime, "addon.node"));
     expect(() =>
-      pruneStandaloneRuntime(runtime, [
+      planStandaloneRuntime(runtime, [
         { source: "addon.node", destination: "native/addon.node", category: "nativeAddons" },
       ]),
     ).toThrow("contained regular file");
@@ -159,7 +163,9 @@ describe("standalone resource allowlist", () => {
       "extensions/example",
       "packages/gateway-client/dist",
     ];
-    const result = pruneStandaloneRuntime(runtime, [], new Set(), directories);
+    const result = pruneStandaloneRuntime(
+      planStandaloneRuntime(runtime, [], new Set(), directories),
+    );
     for (const directory of directories) {
       const filename = path.join(runtime, directory);
       expect(fs.realpathSync(filename)).toBe(path.join(fs.realpathSync(runtime), directory));
@@ -177,7 +183,7 @@ describe("standalone resource allowlist", () => {
       "dist/extensions/node_modules/openclaw/package.json",
       "dist/extensions/node_modules/openclaw/index.js",
     ]);
-    const result = pruneStandaloneRuntime(runtime);
+    const result = pruneStandaloneRuntime(planStandaloneRuntime(runtime));
     for (const directory of ["scripts", "dist/extensions/node_modules"]) {
       const filename = path.join(runtime, directory);
       expect(fs.lstatSync(filename).isDirectory()).toBe(true);
@@ -190,7 +196,7 @@ describe("standalone resource allowlist", () => {
 
   it("does not create resolution directories absent from the build snapshot", () => {
     const runtime = fixture(["package.json"]);
-    pruneStandaloneRuntime(runtime);
+    pruneStandaloneRuntime(planStandaloneRuntime(runtime));
     expect(fs.existsSync(path.join(runtime, "scripts"))).toBe(false);
     expect(fs.existsSync(path.join(runtime, "dist/extensions/node_modules"))).toBe(false);
   });
@@ -202,7 +208,7 @@ describe("standalone resource allowlist", () => {
     "packages/gateway-client/node_modules/example",
   ])("rejects metadata directory %s", (directory) => {
     const runtime = fixture(["package.json"]);
-    expect(() => pruneStandaloneRuntime(runtime, [], new Set(), [directory])).toThrow(
+    expect(() => planStandaloneRuntime(runtime, [], new Set(), [directory])).toThrow(
       "Invalid standalone metadata directory",
     );
     expect(fs.existsSync(path.join(runtime, "package.json"))).toBe(true);
@@ -211,7 +217,7 @@ describe("standalone resource allowlist", () => {
   it("rejects traversal in resource destinations", () => {
     const runtime = fixture(["package.json"]);
     expect(() =>
-      pruneStandaloneRuntime(runtime, [
+      planStandaloneRuntime(runtime, [
         { source: "package.json", destination: "../outside", category: "nativeAddons" },
       ]),
     ).toThrow("Invalid standalone resource path");

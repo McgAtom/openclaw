@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { pruneStandaloneRuntime } from "../../scripts/lib/bun-standalone-sidecar.mjs";
+import {
+  planStandaloneRuntime,
+  pruneStandaloneRuntime,
+} from "../../scripts/lib/bun-standalone-sidecar.mjs";
 import { copyStandaloneRuntime } from "../../scripts/lib/bun-standalone-snapshot.mjs";
 import { resolveOpenClawReferencePaths } from "../../src/agents/docs-path.js";
 import { discoverSkillCandidates } from "../../src/skills/loading/skill-root-discovery.js";
@@ -73,7 +76,7 @@ it("packages docs and custodian skills at their standalone source roots", async 
     for (const filename of privateDocs) {
       expect(fs.existsSync(path.join(runtimeRoot, filename))).toBe(false);
     }
-    pruneStandaloneRuntime(runtimeRoot);
+    pruneStandaloneRuntime(planStandaloneRuntime(runtimeRoot));
     expect(
       fs.readFileSync(
         path.join(runtimeRoot, "docs/reference/templates/roles/presets/team.json"),

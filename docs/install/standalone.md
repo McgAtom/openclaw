@@ -186,6 +186,10 @@ graph. Runtime traces verify the exercised paths; they are not a frozen list of
 files to ship. Browser JavaScript and skill scripts remain disk resources even
 though application JavaScript executes from the image.
 
+The builder validates the resource plan before compiling the executable. Hoisted
+copies targeting the same resource path share one file when their content hashes
+match; conflicting copies stop the build and identify both source paths.
+
 Native dependencies must match the target platform and architecture. A
 standalone build does not make an arbitrary plugin portable, provide a signing
 identity, install a service, or migrate user state during compilation.

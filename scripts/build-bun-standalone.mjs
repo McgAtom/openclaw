@@ -30,6 +30,7 @@ import { createStandaloneMetadataAdapter } from "./lib/bun-standalone-metadata.m
 import { createStandaloneNativeAdapter } from "./lib/bun-standalone-native.mjs";
 import { createStandaloneRequireAdapter } from "./lib/bun-standalone-require.mjs";
 import {
+  planStandaloneRuntime,
   pruneStandaloneRuntime,
   standaloneResourceCategory,
 } from "./lib/bun-standalone-sidecar.mjs";
@@ -570,6 +571,12 @@ const compiledEntries = result.outputs
   .filter((output) => output.path.endsWith(".js"))
   .map((output) => output.path);
 const nativeResources = native.finalize({ metafile: result.metafile, embeddedPaths });
+const resourcePlan = planStandaloneRuntime(
+  runtimeRoot,
+  [...nativeResources.files, ...sqlite.files],
+  declaredPluginAssets,
+  metadata.directories,
+);
 fs.writeFileSync(
   path.join(outputRoot, "native-resources.json"),
   JSON.stringify(nativeResources.files, null, 2),
@@ -699,12 +706,7 @@ const compiled = spawnSync(
 if (compiled.status !== 0) {
   throw new Error(`Standalone compilation failed (${compiled.status})`);
 }
-const pruning = pruneStandaloneRuntime(
-  runtimeRoot,
-  [...nativeResources.files, ...sqlite.files],
-  declaredPluginAssets,
-  metadata.directories,
-);
+const pruning = pruneStandaloneRuntime(resourcePlan);
 const manifest = await createStandaloneManifest({
   outputRoot,
   mode,

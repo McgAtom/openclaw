@@ -9,7 +9,10 @@ import { parse } from "acorn";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStandaloneNativeAdapter } from "../../scripts/lib/bun-standalone-native.mjs";
 import { createStandaloneRequireAdapter } from "../../scripts/lib/bun-standalone-require.mjs";
-import { pruneStandaloneRuntime } from "../../scripts/lib/bun-standalone-sidecar.mjs";
+import {
+  planStandaloneRuntime,
+  pruneStandaloneRuntime,
+} from "../../scripts/lib/bun-standalone-sidecar.mjs";
 
 const temporary: string[] = [];
 afterEach(() =>
@@ -64,7 +67,92 @@ function evaluate(
   return { finalized, context, root };
 }
 
+function hoistedCopies() {
+  const { root, write } = fixture();
+  const parents = [
+    path.join(root, "node_modules", "first"),
+    path.join(root, "node_modules", "second"),
+  ] as const;
+  const helpers = [
+    path.join(parents[0], "node_modules", "helper"),
+    path.join(parents[1], "node_modules", "helper"),
+  ] as const;
+  write(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "fixture", dependencies: { first: "1.0.0", second: "1.0.0" } }),
+  );
+  for (const parent of parents) {
+    const helper = path.join(parent, "node_modules", "helper");
+    write(
+      path.join(parent, "package.json"),
+      JSON.stringify({
+        name: path.basename(parent),
+        version: "1.0.0",
+        dependencies: { helper: "1.0.0" },
+      }),
+    );
+    write(path.join(parent, "index.js"), "module.exports = require('helper');");
+    write(
+      path.join(helper, "package.json"),
+      JSON.stringify({ name: "helper", version: "1.0.0", main: "index.js" }),
+    );
+    write(path.join(helper, "LICENSE"), "Same license\n");
+    write(path.join(helper, "index.js"), "module.exports = 1;");
+  }
+  const adapter = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+  for (const directory of [...parents, ...helpers]) {
+    const filename = path.join(directory, "index.js");
+    adapter.transform({ filename, contents: fs.readFileSync(filename, "utf8") });
+  }
+  return { root, write, parents, helpers, adapter };
+}
+
 describe("standalone native sidecar", () => {
+  it("collapses identical hoisted metadata and licenses while retaining every resolution path", () => {
+    const { root, parents, helpers, adapter } = hoistedCopies();
+    const { finalized, context } = evaluate(adapter, {}, root);
+    const shared = path.join(root, "native/helper@1.0.0/helper");
+    expect(
+      finalized.files.filter((file) => file.destination.startsWith("native/helper@1.0.0/")),
+    ).toHaveLength(2);
+    pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
+    for (const name of ["package.json", "LICENSE"]) {
+      const expected = path.join(shared, name);
+      for (const parent of parents) {
+        expect(
+          context["__openclawStandaloneNativeResolve"](
+            path.join(parent, "index.js"),
+            `helper/${name}`,
+          ),
+        ).toBe(expected);
+      }
+      for (const parent of [...helpers, shared]) {
+        expect(
+          context["__openclawStandaloneNativeResolve"](path.join(parent, "index.js"), `./${name}`),
+        ).toBe(expected);
+      }
+      expect(fs.readFileSync(expected, "utf8")).toContain(
+        name === "LICENSE" ? "Same license" : '"name":"helper"',
+      );
+    }
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
+  });
+
+  it.each(["package.json", "LICENSE"])("rejects conflicting hoisted %s before pruning", (name) => {
+    const { root, write, helpers, adapter } = hoistedCopies();
+    write(
+      path.join(helpers[1], name),
+      name === "LICENSE"
+        ? "Different license\n"
+        : JSON.stringify({ name: "helper", version: "1.0.0", main: "index.js", changed: true }),
+    );
+    expect(() => adapter.finalize()).toThrow(
+      `Conflicting standalone resource native/helper@1.0.0/helper/${name}: node_modules/first/node_modules/helper/${name} and node_modules/second/node_modules/helper/${name}`,
+    );
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "native"))).toBe(false);
+  });
+
   it("loads the full ws implementation through a transformed ESM caller after pruning", () => {
     const { root, write, pkg } = fixture();
     const dependency = pkg(
@@ -95,7 +183,7 @@ import { pathToFileURL } from "node:url";
 import { createStandaloneNativeAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-native.mjs")).href)};
 import { createStandaloneRequireAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-require.mjs")).href)};
 import { rewriteStandaloneImports } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-imports.mjs")).href)};
-import { pruneStandaloneRuntime } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-sidecar.mjs")).href)};
+import { planStandaloneRuntime, pruneStandaloneRuntime } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-sidecar.mjs")).href)};
 const { parse } = createRequire(${JSON.stringify(path.resolve("package.json"))})("acorn");
 const root = ${JSON.stringify(root)};
 const image = ${JSON.stringify(image)};
@@ -127,7 +215,7 @@ const bootstrapFile = path.join(image, "bootstrap.mjs");
 const moduleFile = path.join(image, "caller.mjs");
 fs.writeFileSync(bootstrapFile, bootstrap);
 fs.writeFileSync(moduleFile, transformed);
-pruneStandaloneRuntime(root, finalized.files);
+pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
 if (fs.existsSync(path.join(root, "node_modules"))) throw new Error("node_modules remains");
 await import(pathToFileURL(bootstrapFile).href);
 const loaded = await import(pathToFileURL(moduleFile).href);
@@ -194,7 +282,7 @@ console.log("full-ws loaded without node_modules");
           : embeddedPaths[path.relative(root, filename)],
     });
     vm.runInContext(requireAdapter.bootstrap, context);
-    pruneStandaloneRuntime(root, finalized.files);
+    pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     const fromRoot = context["__openclawStandaloneCreateRequire"](
       createRequire,
       path.join(root, "dist/entry.mjs"),
@@ -266,7 +354,7 @@ console.log("full-ws loaded without node_modules");
     const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths: {} });
     Object.assign(context, { embedded: () => undefined, commonJsEntries: new Set() });
     vm.runInContext(requireAdapter.bootstrap, context);
-    pruneStandaloneRuntime(root, finalized.files);
+    pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     const fromA = context["__openclawStandaloneCreateRequire"](
       createRequire,
       path.join(pluginA, "index.js"),
@@ -326,7 +414,7 @@ console.log("full-ws loaded without node_modules");
       context,
     );
     vm.runInContext(requireAdapter.bootstrap, context);
-    pruneStandaloneRuntime(root, finalized.files);
+    pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
     const load = context["__openclawStandaloneCreateRequire"](
       createRequire,
@@ -407,7 +495,7 @@ console.log("full-ws loaded without node_modules");
       createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths }).bootstrap,
       context,
     );
-    pruneStandaloneRuntime(root, finalized.files);
+    pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     const load = context["__openclawStandaloneCreateRequire"](createRequire, helper);
     expect(load("runtime-library")).toBe("embedded");
     expect(load("esm-library")).toMatchObject({ default: "default-value", named: "named-value" });
@@ -707,7 +795,7 @@ console.log("full-ws loaded without node_modules");
           !file.destination.includes(".pnpm") && !/\.[cm]?js$/.test(file.destination),
       ),
     ).toBe(true);
-    const report = pruneStandaloneRuntime(root, finalized.files);
+    const report = pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     expect(report.categories.dependencyLicenses?.files).toBe(1);
     expect(
       fs.readFileSync(
@@ -738,7 +826,7 @@ console.log("full-ws loaded without node_modules");
     const transformed = adapter.transform({ filename, contents: source });
     const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths: {} });
     const finalized = adapter.finalize();
-    pruneStandaloneRuntime(root, finalized.files);
+    pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     const context = vm.createContext({
       root,
       path,

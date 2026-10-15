@@ -85,8 +85,8 @@ function walk(root, callback, relative = "") {
   }
 }
 
-/** Replace the build snapshot only after compilation, flattening approved resources into files. */
-export function pruneStandaloneRuntime(
+/** Validate the resource plan while the complete build snapshot is still available. */
+export function planStandaloneRuntime(
   root,
   dependencyResources = [],
   declaredPluginAssets = new Set(),
@@ -123,53 +123,79 @@ export function pruneStandaloneRuntime(
     }
     resources.set(destination, { source, category });
   }
-  const minimal = fs.mkdtempSync(path.join(path.dirname(root), ".standalone-resources-"));
   /** @type {Record<string, { files: number, bytes: number }>} */
   const categories = {};
-  let retainedFiles = 0;
+  const files = [];
+  const directories = new Set();
   let retainedBytes = 0;
+  const canonicalRoot = fs.realpathSync(root) + path.sep;
+  for (const [destination, { source, category }] of resources) {
+    const filename = fs.realpathSync(path.join(root, source));
+    const stat = fs.statSync(filename);
+    if (!filename.startsWith(canonicalRoot) || !stat.isFile()) {
+      throw new Error(`Standalone resource is not a contained regular file: ${source}`);
+    }
+    files.push({ source: filename, destination });
+    const counts = (categories[category] ??= { files: 0, bytes: 0 });
+    counts.files += 1;
+    counts.bytes += stat.size;
+    retainedBytes += stat.size;
+  }
+  // SDK metadata fallback and plugin discovery still inspect these directory boundaries.
+  for (const directory of ["scripts", "dist/extensions/node_modules"]) {
+    if (!fs.existsSync(path.join(root, directory))) {
+      continue;
+    }
+    const source = fs.realpathSync(path.join(root, directory));
+    if (!source.startsWith(canonicalRoot) || !fs.statSync(source).isDirectory()) {
+      throw new Error(`Standalone resolution path is not a contained directory: ${directory}`);
+    }
+    directories.add(directory);
+  }
+  // Keep discovery's directory shape without embedded modules or pnpm namespaces.
+  for (const directory of metadataDirectories) {
+    const parts = directory.split("/");
+    if (
+      !["dist", "extensions", "packages"].includes(parts[0]) ||
+      parts.some((part) => !part || part === "." || part === ".." || part === "node_modules")
+    ) {
+      throw new Error(`Invalid standalone metadata directory: ${directory}`);
+    }
+    const source = fs.realpathSync(path.join(root, directory));
+    if (!source.startsWith(canonicalRoot) || !fs.statSync(source).isDirectory()) {
+      throw new Error(`Standalone metadata path is not a contained directory: ${directory}`);
+    }
+    directories.add(directory);
+  }
+  return {
+    root,
+    files,
+    directories,
+    pruning: {
+      policy: "runtime-resources-v1",
+      removedFiles: originalFiles - files.length,
+      removedBytes: originalBytes - retainedBytes,
+      removedSymlinks,
+      categories,
+      sidecarPlugins: [],
+    },
+  };
+}
+
+/**
+ * Replace the snapshot after compilation using the already validated resource plan.
+ * @param {ReturnType<typeof planStandaloneRuntime>} plan
+ */
+export function pruneStandaloneRuntime(plan) {
+  const { root, files, directories, pruning } = plan;
+  const minimal = fs.mkdtempSync(path.join(path.dirname(root), ".standalone-resources-"));
   try {
-    const canonicalRoot = fs.realpathSync(root) + path.sep;
-    for (const [destination, { source, category }] of resources) {
-      const filename = fs.realpathSync(path.join(root, source));
-      if (!filename.startsWith(canonicalRoot) || !fs.statSync(filename).isFile()) {
-        throw new Error(`Standalone resource is not a contained regular file: ${source}`);
-      }
+    for (const { source, destination } of files) {
       const output = path.join(minimal, destination);
       fs.mkdirSync(path.dirname(output), { recursive: true });
-      fs.copyFileSync(filename, output, fs.constants.COPYFILE_FICLONE);
-      const size = fs.statSync(output).size;
-      const counts = (categories[category] ??= { files: 0, bytes: 0 });
-      counts.files += 1;
-      counts.bytes += size;
-      retainedFiles += 1;
-      retainedBytes += size;
+      fs.copyFileSync(source, output, fs.constants.COPYFILE_FICLONE);
     }
-    // SDK metadata fallback and plugin discovery still inspect these directory boundaries.
-    for (const directory of ["scripts", "dist/extensions/node_modules"]) {
-      if (!fs.existsSync(path.join(root, directory))) {
-        continue;
-      }
-      const source = fs.realpathSync(path.join(root, directory));
-      if (!source.startsWith(canonicalRoot) || !fs.statSync(source).isDirectory()) {
-        throw new Error(`Standalone resolution path is not a contained directory: ${directory}`);
-      }
-      fs.mkdirSync(path.join(minimal, directory), { recursive: true });
-    }
-    // Image discovery still inspects directory ownership and merges physical entries.
-    // Keep that directory shape without retaining embedded modules or pnpm namespaces.
-    for (const directory of metadataDirectories) {
-      const parts = directory.split("/");
-      if (
-        !["dist", "extensions", "packages"].includes(parts[0]) ||
-        parts.some((part) => !part || part === "." || part === ".." || part === "node_modules")
-      ) {
-        throw new Error(`Invalid standalone metadata directory: ${directory}`);
-      }
-      const source = fs.realpathSync(path.join(root, directory));
-      if (!source.startsWith(canonicalRoot) || !fs.statSync(source).isDirectory()) {
-        throw new Error(`Standalone metadata path is not a contained directory: ${directory}`);
-      }
+    for (const directory of directories) {
       fs.mkdirSync(path.join(minimal, directory), { recursive: true });
     }
     fs.rmSync(root, { recursive: true });
@@ -177,12 +203,5 @@ export function pruneStandaloneRuntime(
   } finally {
     fs.rmSync(minimal, { recursive: true, force: true });
   }
-  return {
-    policy: "runtime-resources-v1",
-    removedFiles: originalFiles - retainedFiles,
-    removedBytes: originalBytes - retainedBytes,
-    removedSymlinks,
-    categories,
-    sidecarPlugins: [],
-  };
+  return pruning;
 }

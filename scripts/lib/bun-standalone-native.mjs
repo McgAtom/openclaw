@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -956,6 +957,34 @@ export function createStandaloneNativeAdapter({
           throw new Error(`Standalone resource is already embedded: ${file.source}`);
         }
       }
+      const emittedFiles = new Map();
+      const contentHashes = new Map();
+      const contentHash = (source) => {
+        if (!contentHashes.has(source)) {
+          contentHashes.set(
+            source,
+            createHash("sha256")
+              .update(fs.readFileSync(path.join(runtimeRoot, source)))
+              .digest("hex"),
+          );
+        }
+        return contentHashes.get(source);
+      };
+      for (const file of files) {
+        const previous = emittedFiles.get(file.destination);
+        if (previous) {
+          if (
+            previous.category !== file.category ||
+            contentHash(previous.source) !== contentHash(file.source)
+          ) {
+            throw new Error(
+              `Conflicting standalone resource ${file.destination}: ${previous.source} and ${file.source}`,
+            );
+          }
+        } else {
+          emittedFiles.set(file.destination, file);
+        }
+      }
       const retainedByDirectory = new Map(
         [...metadataOwners].map((owner) => [owner.directory, owner]),
       );
@@ -1036,11 +1065,12 @@ export function createStandaloneNativeAdapter({
         .toSorted((a, b) => b.original.length - a.original.length);
       const table = {
         owners,
+        // Hoisted copies share emitted bytes but retain every original resolution path.
         files: Object.fromEntries(files.map((file) => [file.source, file.destination])),
         embedded: embeddedPaths,
       };
       return {
-        files,
+        files: [...emittedFiles.values()],
         bootstrapReplacement: {
           search: JSON.stringify(TABLE_MARKER),
           replacement: JSON.stringify(table),

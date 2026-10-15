@@ -119,13 +119,15 @@ describe("native subagent submission receipts in the binding store", () => {
         nativeTurnId,
         nativeParentThreadId: binding.threadId,
         owner,
+        ...(nativeTurnId === "child-turn-b" ? { submission: receipt } : {}),
       };
+      const nextReceipt = { ...receipt, callId: "call-two", submissionId: "child-turn-c" };
       const second = {
         ...first,
         runId: "codex-thread:child-thread:turn:child-turn-c",
         nativeTurnId: "child-turn-c",
+        ...(first.submission ? { submission: nextReceipt } : {}),
       };
-      const nextReceipt = { ...receipt, callId: "call-two", submissionId: "child-turn-c" };
       await store.mutate(
         identity,
         { kind: "record-native-subagent-submission", owner, receipt: nextReceipt },
@@ -133,9 +135,27 @@ describe("native subagent submission receipts in the binding store", () => {
       );
       const row = state.lookup(bindingStoreKey(identity));
       assert(row?.state === "active");
+      const recordedCompletion = {
+        childThreadId: first.childThreadId,
+        status: "succeeded" as const,
+        statusLabel: "recorded_task_result" as const,
+        result: "Preserve the recorded result",
+      };
       state.register(bindingStoreKey(identity), {
         ...row,
-        nativeSubagentAssignments: { version: 1, assignments: [first, first, second] },
+        nativeSubagentAssignments: {
+          version: 1,
+          assignments: [
+            first,
+            {
+              ...first,
+              runId: "codex-thread:child-thread",
+              submission: undefined,
+              recordedCompletion,
+            },
+            second,
+          ],
+        },
       });
       await store.mutate(
         identity,
@@ -147,15 +167,31 @@ describe("native subagent submission receipts in the binding store", () => {
         {
           kind: "record-native-subagent-assignment",
           owner,
-          assignment: { ...first, runId: "codex-thread:child-thread" },
+          assignment: { ...first, runId: "codex-thread:child-thread", submission: undefined },
         },
         currentAuthority,
       );
-      expect(await store.readNativeSubagentAssignments?.(identity, owner)).toHaveLength(2);
+      const pending = await store.readNativeSubagentAssignments?.(identity, owner);
+      expect(pending).toHaveLength(2);
+      expect(pending).toContainEqual({ ...first, recordedCompletion });
+      await expect(
+        store.mutate(
+          identity,
+          {
+            kind: "record-native-subagent-assignment",
+            owner,
+            assignment: {
+              ...first,
+              recordedCompletion: { ...recordedCompletion, result: "Conflicting result" },
+            },
+          },
+          currentAuthority,
+        ),
+      ).rejects.toThrow("Conflicting Codex native pending assignment metadata");
       const retirement = {
         kind: "consume-native-subagent-assignment" as const,
         owner,
-        assignment: { ...first, runId: "codex-thread:child-thread" },
+        assignment: { ...first, runId: "codex-thread:child-thread", submission: undefined },
         undelivered: true as const,
       };
       await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(true);

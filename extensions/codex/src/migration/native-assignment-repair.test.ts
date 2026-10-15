@@ -184,26 +184,56 @@ describe("Codex native assignment Doctor repair", () => {
     expect(repaired.warnings.join(" ")).toContain("unknown lifecycle evidence");
   });
 
-  it("collapses exact duplicates, preserves separate child turns, and converges after repair", async () => {
-    const followup = {
-      ...assignment,
-      runId: "codex-thread:child:turn:second-turn",
-      nativeTurnId: "second-turn",
-    };
-    const state = fixture([assignment, { ...assignment }, followup]);
-    expect(await migration.detectLegacyState(state.params)).not.toBeNull();
-    expect(state.read()).toEqual(state.original);
+  it.each([false, true])(
+    "collapses compatible aliases, preserves separate turns, and converges (reverse=%s)",
+    async (reverse) => {
+      const submission = {
+        parentTurnId: "parent-turn",
+        callId: "child-call",
+        childThreadId: assignment.childThreadId,
+        submissionId: assignment.nativeTurnId!,
+        predecessorRunId: "codex-thread:child",
+        predecessorNativeTurnId: "previous-turn",
+      };
+      const recordedCompletion = {
+        childThreadId: assignment.childThreadId,
+        status: "succeeded" as const,
+        statusLabel: "recorded_task_result" as const,
+        result: "Preserve the recorded result",
+      };
+      const aliases = [
+        { ...assignment, submission },
+        { ...assignment, runId: "codex-thread:child", recordedCompletion },
+      ];
+      if (reverse) {
+        aliases.reverse();
+      }
+      const followup = {
+        ...assignment,
+        runId: "codex-thread:child:turn:second-turn",
+        nativeTurnId: "second-turn",
+      };
+      const state = fixture([...aliases, assignment, { ...assignment }, followup]);
+      expect(await migration.detectLegacyState(state.params)).not.toBeNull();
+      expect(state.read()).toEqual(state.original);
 
-    const repaired = await migration.migrateLegacyState(state.params);
+      const repaired = await migration.migrateLegacyState(state.params);
 
-    expect(repaired.warnings).toEqual([]);
-    expect(state.read()).toEqual({
-      ...state.original,
-      nativeSubagentAssignments: { version: 1, assignments: [assignment, followup] },
-    });
-    expect(await migration.detectLegacyState(state.params)).toBeNull();
-    expect(await migration.migrateLegacyState(state.params)).toEqual({ changes: [], warnings: [] });
-  });
+      expect(repaired.warnings).toEqual([]);
+      expect(state.read()).toEqual({
+        ...state.original,
+        nativeSubagentAssignments: {
+          version: 1,
+          assignments: [{ ...assignment, submission, recordedCompletion }, followup],
+        },
+      });
+      expect(await migration.detectLegacyState(state.params)).toBeNull();
+      expect(await migration.migrateLegacyState(state.params)).toEqual({
+        changes: [],
+        warnings: [],
+      });
+    },
+  );
 
   it("removes only assignments contradicted by the canonical requester lifecycle or connection", async () => {
     const stale = [
@@ -273,10 +303,15 @@ describe("Codex native assignment Doctor repair", () => {
     };
     const conflict = fixture([
       { ...assignment, recordedCompletion: result },
-      { ...assignment, recordedCompletion: { ...result, result: "conflicting result" } },
+      {
+        ...assignment,
+        runId: "codex-thread:child",
+        recordedCompletion: { ...result, result: "conflicting result" },
+      },
     ]);
-    await migration.migrateLegacyState(conflict.params);
+    const conflicted = await migration.migrateLegacyState(conflict.params);
     expect(conflict.read()).toEqual(conflict.original);
+    expect(conflicted.warningDisposition).toBe("recoverable");
 
     sessionStore.getSessionEntryByIdAsync.mockRejectedValue(
       new Error("Requester store unavailable"),

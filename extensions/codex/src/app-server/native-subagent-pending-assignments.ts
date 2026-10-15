@@ -101,7 +101,30 @@ export function readNativePendingAssignments(value: unknown) {
   return parsed.data;
 }
 
-/** Doctor and binding writes collapse only equivalent obligations, never distinct turns. */
+function mergeNativeAssignmentMetadata(
+  current: CodexNativeSubagentPendingAssignment,
+  incoming: CodexNativeSubagentPendingAssignment,
+): void {
+  if (
+    (current.submission &&
+      incoming.submission &&
+      !isDeepStrictEqual(current.submission, incoming.submission)) ||
+    (current.recordedCompletion &&
+      incoming.recordedCompletion &&
+      !isDeepStrictEqual(current.recordedCompletion, incoming.recordedCompletion))
+  ) {
+    throw new Error("Conflicting Codex native pending assignment metadata.");
+  }
+  if (incoming.submission) {
+    current.runId = incoming.runId;
+    current.submission = incoming.submission;
+  }
+  if (incoming.recordedCompletion) {
+    current.recordedCompletion = incoming.recordedCompletion;
+  }
+}
+
+/** Doctor and binding writes merge compatible facts for one obligation, never distinct turns. */
 export function normalizeNativePendingAssignments(value: unknown) {
   if (value === undefined) {
     return undefined;
@@ -109,16 +132,23 @@ export function normalizeNativePendingAssignments(value: unknown) {
   const inventory = inventorySchema.parse(value);
   const assignments: CodexNativeSubagentPendingAssignment[] = [];
   for (const entry of inventory.assignments) {
-    const { runId: _runId, ...fact } = entry;
-    if (
-      !assignments.some(
-        ({ runId, ...saved }) =>
-          isDeepStrictEqual(saved, fact) &&
-          (entry.nativeTurnId !== undefined || runId === entry.runId),
-      )
-    ) {
+    const existing = assignments.find(
+      (saved) =>
+        saved.childThreadId === entry.childThreadId &&
+        saved.nativeTurnId === entry.nativeTurnId &&
+        (entry.nativeTurnId !== undefined || saved.runId === entry.runId),
+    );
+    if (!existing) {
       assignments.push(entry);
+      continue;
     }
+    if (
+      existing.nativeParentThreadId !== entry.nativeParentThreadId ||
+      !isDeepStrictEqual(existing.owner, entry.owner)
+    ) {
+      throw new Error("Conflicting Codex native pending assignment metadata.");
+    }
+    mergeNativeAssignmentMetadata(existing, entry);
   }
   if (new Set(assignments.map((entry) => entry.runId)).size !== assignments.length) {
     throw new Error("Conflicting Codex native pending assignment metadata.");
@@ -133,7 +163,7 @@ export function mutateNativePendingAssignments(params: {
   consume: boolean;
 }) {
   const current = normalizeNativePendingAssignments(params.current);
-  const assignment = assignmentSchema.parse(params.assignment);
+  let assignment = assignmentSchema.parse(params.assignment);
   const owner = codexNativeSubagentHistoryOwnerSchema.parse(params.owner);
   if (!matchesNativeAssignmentLifecycle(assignment.owner, owner)) {
     return { applied: false };
@@ -160,10 +190,10 @@ export function mutateNativePendingAssignments(params: {
   }
   const remaining = assignments.filter((entry) => entry !== existing);
   if (!params.consume) {
-    if (!assignment.submission && existing?.nativeTurnId === assignment.nativeTurnId) {
-      assignment.runId = existing?.runId ?? assignment.runId;
-    }
-    if (existing?.recordedCompletion && !assignment.recordedCompletion) {
+    if (existing && existing.nativeTurnId === assignment.nativeTurnId) {
+      mergeNativeAssignmentMetadata(existing, assignment);
+      assignment = existing;
+    } else if (existing?.recordedCompletion && !assignment.recordedCompletion) {
       assignment.recordedCompletion = existing.recordedCompletion;
     }
     remaining.push(assignment);

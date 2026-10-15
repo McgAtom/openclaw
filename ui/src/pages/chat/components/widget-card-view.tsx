@@ -32,7 +32,7 @@ import { parseYouTubeVideoUrl } from "../../../lib/chat/youtube-video.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { showToast } from "../../../lib/toast.ts";
 import { postWidgetTheme } from "../../../lib/widget-theme.ts";
-import { SolidContentPresentation, solidContent } from "../../../lit/solid-content.tsx";
+import { SolidContentPresentation } from "../../../lit/solid-content.tsx";
 import { CanvasWidgetMount } from "./canvas-widget-mount.tsx";
 import "./browser-tab-card.tsx";
 import {
@@ -707,14 +707,6 @@ export function ToolPreview(props: ToolPreviewProps) {
       )}
     </Show>
   );
-}
-
-export function renderToolPreview(
-  preview: ToolPreviewModel | undefined,
-  surface: ToolPreviewProps["surface"],
-  options?: WidgetCardOptions,
-) {
-  return solidContent(ToolPreview, { preview, surface, options });
 }
 
 declare module "@solidjs/web" {

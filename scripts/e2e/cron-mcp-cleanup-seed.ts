@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import {
-  applyAuthProfileConfig,
-  upsertApiKeyProfileAsync,
-} from "../../dist/plugin-sdk/provider-auth.js";
+import { upsertAuthProfileAsync } from "../../dist/plugin-sdk/provider-auth.js";
 import { applyDockerOpenAiProviderConfig, type OpenClawConfig } from "./docker-openai-seed.ts";
 
 const require = createRequire(import.meta.url);
@@ -71,9 +68,8 @@ async function main() {
   await fs.rm(exitPath, { force: true });
   await writeProbeServer({ serverPath, pidPath, pidsPath, exitPath });
 
-  const profileId = "openai:cron-mcp-cleanup";
-  const apiKey = "sk-docker-cron-mcp-cleanup-test";
-  let seededConfig = applyDockerOpenAiProviderConfig(
+  const profileId = "openai:docker-cron-cleanup";
+  const seededConfig = applyDockerOpenAiProviderConfig(
     {
       gateway: {
         controlUi: {
@@ -118,28 +114,25 @@ async function main() {
         },
       },
     } satisfies OpenClawConfig,
-    apiKey,
+    "sk-docker-cron-mcp-cleanup-test",
   );
-  seededConfig = applyAuthProfileConfig(seededConfig, {
+
+  // Scheduled inference retains a stored account, not the provider-config key.
+  await upsertAuthProfileAsync({
     profileId,
-    provider: "openai",
-    mode: "api_key",
+    credential: {
+      type: "api_key",
+      provider: "openai",
+      key: "sk-docker-cron-mcp-cleanup-test",
+    },
   });
-  const provider = seededConfig.models?.providers?.openai;
-  const defaults = seededConfig.agents?.defaults;
-  if (!provider || !defaults) {
-    throw new Error("failed to seed cron cleanup inference account");
-  }
-  // Cron captures a durable account owner; a provider-config key cannot supply one.
-  delete provider.apiKey;
-  defaults.model = { primary: `openai/gpt-5.6-luna@${profileId}` };
-  await upsertApiKeyProfileAsync({
-    provider: "openai",
-    profileId,
-    input: apiKey,
-    agentDir: path.join(stateDir, "agents", "main", "agent"),
-    options: { config: seededConfig, secretInputMode: "plaintext" },
-  });
+  seededConfig.agents = {
+    ...seededConfig.agents,
+    defaults: {
+      ...seededConfig.agents?.defaults,
+      model: `openai/gpt-5.6-luna@${profileId}`,
+    },
+  };
 
   await fs.writeFile(configPath, `${JSON.stringify(seededConfig, null, 2)}\n`, "utf-8");
 

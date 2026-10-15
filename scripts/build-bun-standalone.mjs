@@ -20,6 +20,7 @@ import {
   assertStandalonePlatform,
   createStandaloneManifest,
   parseStandaloneArguments,
+  relativeStandaloneEntry,
   resolveStandaloneBuildIdentity,
   sha256File,
   STANDALONE_USAGE,

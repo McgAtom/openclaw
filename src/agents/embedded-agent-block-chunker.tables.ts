@@ -132,7 +132,7 @@ export function findTableContinuationHeader(
         cut > table.start + table.header.length &&
         source.charAt(cut) === "\n" &&
         ((cut < table.end && nextStart <= table.end) ||
-          (cut === table.end && streaming && /^\r?\n?$/.test(source.slice(table.end)))),
+          (cut >= table.end && streaming && /^\r?\n?$/.test(source.slice(table.end)))),
     )?.header ?? ""
   );
 }

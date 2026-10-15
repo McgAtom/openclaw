@@ -122,6 +122,37 @@ describe("streamed oversized Markdown tables", () => {
     expect(output.chunks.every((chunk) => chunk.length <= 1200)).toBe(true);
   });
 
+  it.each(["\n", "\r\n"])(
+    "retains the header when a streaming table ends at a buffered %j boundary",
+    (newline) => {
+      const initial = [
+        "| A | B |",
+        "| - | - |",
+        ...Array.from(
+          { length: 12 },
+          (_, i) => `| ${String(i).padStart(2, "0")} | ${i < 6 ? 1 : 10} |`,
+        ),
+        "",
+      ].join(newline);
+      const tail = `| 12 | 10 |${newline}`;
+      const chunker = new EmbeddedBlockChunker({ minChars: 50, maxChars: 100 });
+      const output = capture(chunker);
+      chunker.append(initial);
+      output.drain();
+      chunker.append(tail);
+      output.drain(true);
+
+      const rendered = output.chunks.map((chunk) => convertMarkdownTables(chunk, "bullets"));
+      expect(rendered.join("\n")).not.toMatch(/^\| \d+/m);
+      expect(rendered.join("\n").match(/\*\*\d{2}\*\*/g)).toEqual(
+        Array.from({ length: 13 }, (_, i) => `**${String(i).padStart(2, "0")}**`),
+      );
+      expect(output.metadata.map((entry) => entry.sourceText).join("")).toBe(initial + tail);
+      expect(output.chunks.every((chunk) => chunk.length <= 100)).toBe(true);
+      expect(chunker.hasBuffered()).toBe(false);
+    },
+  );
+
   it("keeps table continuations renderable across a reconciled source boundary", () => {
     const chunker = new EmbeddedBlockChunker({ minChars: 800, maxChars: 1200 });
     chunker.reset([table.indexOf("| R77 |")]);

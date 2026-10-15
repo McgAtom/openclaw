@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { moduleResolve } from "import-meta-resolve";
 
 const TABLE_MARKER = "__OPENCLAW_STANDALONE_NATIVE_TABLE__";
 const NATIVE_LIBRARY = /\.(?:dylib|dll|so(?:\.\d+)*)$/;
@@ -416,6 +418,9 @@ export function createStandaloneNativeAdapter({
       }
       directory = path.dirname(directory);
     }
+    if (!found && directory === runtimeRoot) {
+      found = packages.get(runtimeRoot);
+    }
     ownerCache.set(filename, found);
     return found;
   }
@@ -424,6 +429,7 @@ export function createStandaloneNativeAdapter({
     const { isBound, isModuleBinding } = lexicalBindings(ast);
     const origins = new Map();
     const factories = new Set();
+    const moduleResolvers = new Set();
     const moduleRequire = createRequire(filename);
     const calls = new Set();
     const pending = [ast];
@@ -454,6 +460,12 @@ export function createStandaloneNativeAdapter({
         for (const specifier of node.specifiers) {
           if (specifier.imported?.name === "createRequire") {
             factories.add(specifier.local.name);
+          }
+        }
+      } else if (node.source.value === "import-meta-resolve") {
+        for (const specifier of node.specifiers) {
+          if (specifier.imported?.name === "moduleResolve") {
+            moduleResolvers.add(specifier.local.name);
           }
         }
       } else if (node.source.value.startsWith(".")) {
@@ -552,7 +564,60 @@ export function createStandaloneNativeAdapter({
         }
       }
     }
-    return { origins, isBound, isModuleBinding };
+    return { origins, moduleResolvers, isBound, isModuleBinding };
+  }
+
+  function staticModuleResolution(node, filename, bindings) {
+    if (
+      node.type !== "CallExpression" ||
+      node.callee.type !== "Identifier" ||
+      !bindings.moduleResolvers.has(node.callee.name) ||
+      !bindings.isModuleBinding(node.callee) ||
+      node.arguments.length !== 3
+    ) {
+      return undefined;
+    }
+    const [specifier, parent, conditions] = node.arguments;
+    const url = parent?.arguments?.[0];
+    const values = conditions?.arguments?.[0];
+    if (
+      specifier.type !== "Literal" ||
+      typeof specifier.value !== "string" ||
+      parent?.type !== "NewExpression" ||
+      parent.callee.type !== "Identifier" ||
+      parent.callee.name !== "URL" ||
+      bindings.isBound(parent.callee) ||
+      parent.arguments.length !== 1 ||
+      url?.type !== "MemberExpression" ||
+      url.computed ||
+      url.property.name !== "url" ||
+      url.object.type !== "MetaProperty" ||
+      url.object.meta.name !== "import" ||
+      conditions?.type !== "NewExpression" ||
+      conditions.callee.type !== "Identifier" ||
+      conditions.callee.name !== "Set" ||
+      bindings.isBound(conditions.callee) ||
+      conditions.arguments.length !== 1 ||
+      values?.type !== "ArrayExpression" ||
+      values.elements.some((value) => value?.type !== "Literal" || typeof value.value !== "string")
+    ) {
+      return undefined;
+    }
+    try {
+      const resolved = moduleResolve(
+        specifier.value,
+        pathToFileURL(filename),
+        new Set(values.elements.map((value) => value.value)),
+      );
+      if (resolved.protocol !== "file:") {
+        return undefined;
+      }
+      const target = fs.realpathSync(fileURLToPath(resolved));
+      return contained(target) && /\.[cm]?js$/.test(target) ? target : undefined;
+    } catch {
+      // Unavailable optional imports keep their existing runtime resolution behavior.
+      return undefined;
+    }
   }
 
   function retainRuntimeReference(filename, specifier) {
@@ -582,9 +647,27 @@ export function createStandaloneNativeAdapter({
 
   function collectRuntimeReferences(ast, filename, admitModules = false) {
     const bindings = requireBindings(ast, filename);
+    const moduleResolutions = new Map();
+    const admitModule = (target) => {
+      const entry = relative(target);
+      if (!additionalModuleEntries.includes(entry)) {
+        additionalModuleEntries.push(entry);
+      }
+      const owner = ownerOf(target);
+      if (isCommonJsEntry(target, owner?.manifest.type) && !commonJsEntries.includes(entry)) {
+        commonJsEntries.push(entry);
+      }
+    };
     function visit(node) {
       if (!node || typeof node !== "object") {
         return;
+      }
+      const selected = staticModuleResolution(node, filename, bindings);
+      if (selected) {
+        moduleResolutions.set(node, selected);
+        if (admitModules) {
+          admitModule(selected);
+        }
       }
       if (
         [
@@ -608,16 +691,7 @@ export function createStandaloneNativeAdapter({
         if (origin) {
           const target = retainRuntimeReference(origin, node.arguments[0]?.value);
           if (admitModules && !resolveCall && opaqueOrigin && target && /\.[cm]?js$/.test(target)) {
-            const entry = relative(target);
-            if (!additionalModuleEntries.includes(entry)) {
-              additionalModuleEntries.push(entry);
-            }
-            const owner = ownerOf(target);
-            if (isCommonJsEntry(target, owner?.manifest.type)) {
-              if (!commonJsEntries.includes(entry)) {
-                commonJsEntries.push(entry);
-              }
-            }
+            admitModule(target);
           }
         }
       }
@@ -630,7 +704,7 @@ export function createStandaloneNativeAdapter({
       }
     }
     visit(ast);
-    return bindings;
+    return { ...bindings, moduleResolutions };
   }
 
   // Discover native optional wrappers before Bun's graph is fixed. Only production
@@ -799,10 +873,7 @@ export function createStandaloneNativeAdapter({
         sourceType: "module",
         allowReturnOutsideFunction: true,
       });
-      const { isBound } = collectRuntimeReferences(ast, filename);
-      if (!owner.relocate) {
-        return { contents, count: 0 };
-      }
+      const { isBound, moduleResolutions } = collectRuntimeReferences(ast, filename);
       const moduleRequire = createRequire(filename);
       const nativeRequest = (argument) => {
         if (argument?.type !== "Literal") {
@@ -825,9 +896,18 @@ export function createStandaloneNativeAdapter({
       };
       const destination = `${owner.destination}/${slash(path.relative(owner.directory, filename))}`;
       const physical = `(globalThis.__openclawStandaloneRootUrl + ${JSON.stringify(destination)})`;
-      const edits = [];
+      // Preserve lazy factory evaluation while pinning constant conditional-export edges.
+      const rootUrl = pathToFileURL(runtimeRoot + path.sep).href;
+      const edits = [...moduleResolutions].map(([node, target]) => [
+        node.start,
+        node.end,
+        `new URL(${JSON.stringify(pathToFileURL(target).href.slice(rootUrl.length))}, globalThis.__openclawStandaloneRootUrl)`,
+      ]);
       function visit(node, parent, key) {
         if (!node || typeof node !== "object") {
+          return;
+        }
+        if (moduleResolutions.has(node)) {
           return;
         }
         if (
@@ -894,7 +974,9 @@ export function createStandaloneNativeAdapter({
           }
         }
       }
-      visit(ast);
+      if (owner.relocate) {
+        visit(ast);
+      }
       for (const [start, end, replacement] of edits.toSorted((a, b) => b[0] - a[0])) {
         contents = contents.slice(0, start) + replacement + contents.slice(end);
       }

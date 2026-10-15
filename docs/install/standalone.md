@@ -174,6 +174,10 @@ executable metadata supplies bundled plugin source checks and Doctor contract
 hashes. Installed plugins keep their normal filesystem admission and loading
 rules and live in the configured state directory.
 
+Installed TypeScript plugins use the embedded Jiti loader and Babel transformer.
+The builder captures constant conditional-export resolutions before compilation;
+these modules remain lazy and do not require JavaScript in the sidecar.
+
 Private `docs/internal/` content and the root documentation authoring instructions
 (`docs/AGENTS.md` and `docs/CLAUDE.md`) are excluded from the snapshot and sidecar.
 

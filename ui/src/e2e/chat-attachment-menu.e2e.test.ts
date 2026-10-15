@@ -61,14 +61,16 @@ suite.define(() => {
           const pending = page.waitForEvent("filechooser");
           await page.locator('.agent-chat__attach-menu-option[data-value="file"]').click();
           const chooser = await pending;
-          const geometry = await chooser.element().evaluate(
-            (input) =>
-              // SAFETY: The capture listener above writes both DOMRect snapshots before click activation.
-              JSON.parse(input.dataset.pickerGeometry!) as {
-                input: { left: number; top: number; width: number; height: number };
-                trigger: { left: number; top: number; width: number; height: number };
-              },
-          );
+          const geometry = await chooser.element().evaluate((input) => {
+            if (!(input instanceof HTMLInputElement)) {
+              throw new Error("Expected the file chooser to belong to an HTML input");
+            }
+            // SAFETY: The capture listener above writes both DOMRect snapshots before click activation.
+            return JSON.parse(input.dataset.pickerGeometry!) as {
+              input: { left: number; top: number; width: number; height: number };
+              trigger: { left: number; top: number; width: number; height: number };
+            };
+          });
           expect(geometry.trigger.width).toBeGreaterThan(0);
           expect(geometry.trigger.height).toBeGreaterThan(0);
           for (const axis of ["left", "top", "width", "height"] as const) {

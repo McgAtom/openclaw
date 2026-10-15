@@ -124,6 +124,10 @@ async function normalizeRow(entry: BindingRow, params: Params, warnings: string[
         `Could not establish requester ownership for Codex native assignments in ${entry.key}; preserved them for a later Doctor repair.`,
       );
     }
+  } else if (assignments.length > 0) {
+    warnings.push(
+      `Preserved Codex native assignments in ${entry.key}; ownership inspection prerequisites are incomplete. Inspect the binding before retrying Doctor.`,
+    );
   }
   const next = assignments.length ? { version: 1, assignments } : undefined;
   if (isDeepStrictEqual(next, raw.nativeSubagentAssignments)) {

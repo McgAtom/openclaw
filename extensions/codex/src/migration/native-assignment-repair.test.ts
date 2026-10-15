@@ -144,6 +144,23 @@ describe("Codex native assignment Doctor repair", () => {
     expect(state.read()).toEqual(state.original);
   });
 
+  it.each(["authProfileId", "appServerRuntimeFingerprint"])(
+    "warns and preserves assignments when %s prevents ownership inspection",
+    async (field) => {
+      const state = fixture([assignment], { binding: { ...binding, [field]: 42 } });
+
+      expect(await migration.detectLegacyState(state.params)).not.toBeNull();
+      const repaired = await migration.migrateLegacyState(state.params);
+
+      expect(state.read()).toEqual(state.original);
+      expect(repaired.changes).toEqual([]);
+      expect(repaired.warningDisposition).toBe("recoverable");
+      expect(repaired.warnings).toEqual([
+        expect.stringContaining("ownership inspection prerequisites are incomplete"),
+      ]);
+    },
+  );
+
   it.each(["assignment", "session"])("preserves missing %s lifecycle evidence", async (missing) => {
     const legacy =
       missing === "assignment"

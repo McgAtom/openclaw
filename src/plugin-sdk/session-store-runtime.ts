@@ -53,6 +53,7 @@ import { readTranscriptStatsAsync as readAccessorTranscriptStatsAsync } from "..
 import { normalizeResolvedMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
 import type { ResolvedSessionMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
 import type { AmbientTranscriptWatermark, SessionEntry } from "../config/sessions/types.js";
+import { hasErrnoCode } from "../infra/errno.js";
 import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import {
@@ -541,7 +542,10 @@ export async function deleteSessionEntry(params: DeleteSessionEntryParams): Prom
   return result.deleted;
 }
 
-/** Resolves the file artifacts that should be backed up before mutating a session store. */
+/**
+ * Inventories session-store artifacts; this is not a safe live-file copy protocol.
+ * Use createSessionStoreBackup before repair so SQLite owns snapshot consistency.
+ */
 export function resolveSessionStoreBackupPaths(params: {
   agentId?: string;
   storePath: string;
@@ -559,6 +563,53 @@ export function resolveSessionStoreBackupPaths(params: {
   }
 
   return [...backupPaths];
+}
+
+/** Create a verified, standalone SQLite backup and preserve any legacy session index. */
+export async function createSessionStoreBackup(params: {
+  agentId?: string;
+  storePath: string;
+  backupDir: string;
+}): Promise<void> {
+  const fs = await import("node:fs/promises");
+  const { createVerifiedSqliteSnapshot } = await import("../infra/sqlite-snapshot.js");
+  const { captureBackupSqliteSourceGroup, planBackupSqliteSourceGroups } =
+    await import("../infra/backup-sqlite-source-groups.js");
+  const { embedSessionColdArchivesInSnapshot } =
+    await import("../config/sessions/session-cold-storage-backup.js");
+  const storePath = path.resolve(params.storePath);
+  const sqlitePath = resolveSqliteTargetFromSessionStorePath(storePath, {
+    agentId: params.agentId,
+  }).path;
+
+  await fs.mkdir(params.backupDir, { recursive: true, mode: 0o700 });
+  for (const sourcePath of new Set([storePath, sqlitePath])) {
+    const identity = await fs.stat(sourcePath, { bigint: true }).catch((error: unknown) => {
+      if (hasErrnoCode(error, "ENOENT")) {
+        return undefined;
+      }
+      throw error;
+    });
+    if (!identity?.isFile()) {
+      continue;
+    }
+    const targetPath = path.join(params.backupDir, path.basename(sourcePath));
+    if (sourcePath !== sqlitePath) {
+      await fs.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+      continue;
+    }
+    const physicalPath = await fs.realpath(sourcePath);
+    const groups = await planBackupSqliteSourceGroups([{ path: physicalPath, identity }]);
+    await captureBackupSqliteSourceGroup(groups.get(physicalPath)!, () =>
+      createVerifiedSqliteSnapshot({
+        sourcePath: physicalPath,
+        targetPath,
+        preserveRowIds: true,
+        transform: (database) =>
+          embedSessionColdArchivesInSnapshot({ database, sourceStorePath: storePath }),
+      }),
+    );
+  }
 }
 
 /**

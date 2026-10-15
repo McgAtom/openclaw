@@ -11,11 +11,11 @@ import { isPathStrictlyInside } from "openclaw/plugin-sdk/file-access-runtime";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
   isValidAgentHarnessSessionStoreEntry,
+  createSessionStoreBackup,
   deleteSessionEntry,
   getSessionEntryAsync,
   listSessionEntriesAsync,
   loadTranscriptEvents,
-  resolveSessionStoreBackupPaths,
   resolveStorePath,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
@@ -608,21 +608,6 @@ function movePathToBackup(params: {
   return true;
 }
 
-function copyStoreBackup(params: { storePath: string; backupDir: string; agentId: string }) {
-  const targetDir = path.join(params.backupDir, "session-stores", params.agentId);
-  for (const sourcePath of resolveSessionStoreBackupPaths({
-    agentId: params.agentId,
-    storePath: params.storePath,
-  })) {
-    if (!existsFile(sourcePath)) {
-      continue;
-    }
-    const targetPath = path.join(targetDir, path.basename(sourcePath));
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
-    fs.copyFileSync(sourcePath, resolveUniquePath(targetPath));
-  }
-}
-
 function collectSessionArtifactPaths(params: {
   agentId: string;
   storePath: string;
@@ -708,7 +693,11 @@ async function repairFeishuDoctorState(params: {
   )) {
     const agentId = entries[0]!.agentId;
     try {
-      copyStoreBackup({ storePath, backupDir, agentId });
+      await createSessionStoreBackup({
+        storePath,
+        agentId,
+        backupDir: resolveUniquePath(path.join(backupDir, "session-stores", agentId)),
+      });
       const removedEntries: typeof entries = [];
       for (const entry of entries) {
         const { key } = entry;

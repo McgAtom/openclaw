@@ -208,20 +208,23 @@ export class CodexNativeSubagentAssignmentInventory {
         if (!this.dependencies.isCurrent(state) || !custody.isCurrent()) {
           return;
         }
-        if (
-          !recovery ||
-          recovery.parentThreadId !== assignment.nativeParentThreadId ||
-          !pending.some(
-            (entry) =>
-              entry.runId === assignment.runId &&
-              entry.nativeTurnId === assignment.nativeTurnId &&
-              entry.nativeParentThreadId === assignment.nativeParentThreadId &&
-              matchesNativeAssignmentLifecycle(entry.owner, assignment.owner),
-          )
-        ) {
+        if (!recovery || recovery.parentThreadId !== assignment.nativeParentThreadId) {
           continue;
         }
-        await this.dependencies.restore(state, assignment, recovery, custody);
+        const surviving = pending.find(
+          (entry) =>
+            entry.childThreadId === assignment.childThreadId &&
+            entry.nativeParentThreadId === assignment.nativeParentThreadId &&
+            matchesNativeAssignmentLifecycle(entry.owner, assignment.owner) &&
+            ((entry.nativeTurnId === assignment.nativeTurnId &&
+              (entry.nativeTurnId !== undefined || entry.runId === assignment.runId)) ||
+              (recovery.nativeTurnId !== undefined &&
+                entry.nativeTurnId === recovery.nativeTurnId &&
+                (assignment.nativeTurnId === undefined || entry.runId === assignment.runId))),
+        );
+        if (surviving) {
+          await this.dependencies.restore(state, surviving, recovery, custody);
+        }
       }
     } catch (error) {
       embeddedAgentLog.warn("Native pending assignments remain for reconciliation", {

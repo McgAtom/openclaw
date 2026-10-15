@@ -757,6 +757,105 @@ describe("native pending assignment inventory through registered monitor admissi
     },
   );
 
+  it.each(["observed turn", "canonical locator", "resumed turn", "different turn"])(
+    "reconciles a pending assignment's %s during its history read",
+    async (change) => {
+      const f = await fixture();
+      const initial = {
+        runId: "codex-thread:child-thread",
+        childThreadId: "child-thread",
+        ...(change === "observed turn" ? {} : { nativeTurnId: "child-turn" }),
+        nativeParentThreadId: "parent-thread",
+        owner: f.historyOwner(),
+      };
+      await f.store.mutate(
+        f.identity,
+        { kind: "record-native-subagent-assignment", owner: f.historyOwner(), assignment: initial },
+        () => {},
+      );
+      const entered = createDeferred<void>();
+      const history = createDeferred<ReturnType<typeof threadRead>>();
+      const client = createClient();
+      client.setThreadReadFactory("child-thread", () => {
+        entered.resolve();
+        return history.promise;
+      });
+      const parent = await f.register(client);
+      const recovered = threadRead({
+        turnId: change === "resumed turn" ? "resumed-turn" : "child-turn",
+        result: "Recovered result",
+        resultPhase: "final_answer",
+      });
+      if (change === "resumed turn") {
+        const interrupted = threadRead({ turnId: "child-turn", status: "interrupted" });
+        assert(recovered.thread.turns && interrupted.thread.turns);
+        recovered.thread.turns.unshift(...interrupted.thread.turns);
+      }
+      try {
+        await entered.promise;
+        if (change === "different turn") {
+          await f.store.mutate(
+            f.identity,
+            {
+              kind: "consume-native-subagent-assignment",
+              owner: f.historyOwner(),
+              assignment: initial,
+            },
+            () => {},
+          );
+        }
+        const surviving = {
+          ...initial,
+          runId:
+            change === "canonical locator"
+              ? "codex-thread:child-thread:turn:child-turn"
+              : change === "different turn"
+                ? "codex-thread:child-thread:turn:other-turn"
+                : initial.runId,
+          nativeTurnId:
+            change === "resumed turn"
+              ? "resumed-turn"
+              : change === "different turn"
+                ? "other-turn"
+                : "child-turn",
+        };
+        await f.store.mutate(
+          f.identity,
+          {
+            kind: "record-native-subagent-assignment",
+            owner: f.historyOwner(),
+            assignment: surviving,
+          },
+          () => {},
+        );
+        history.resolve(recovered);
+        await parent.ready;
+        await parent.unregister();
+        if (change === "different turn") {
+          expect(f.deliver).not.toHaveBeenCalled();
+          expect(
+            await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
+          ).toEqual([surviving]);
+        } else {
+          expect(f.deliver).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              childSessionKey: surviving.runId,
+              result: "Recovered result",
+            }),
+          );
+          expect(
+            await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
+          ).toEqual([]);
+        }
+      } finally {
+        history.resolve(recovered);
+        await parent.ready;
+        await parent.unregister();
+        client.close();
+      }
+    },
+  );
+
   it("does not restore an assignment retired while native history was being read", async () => {
     const { f, client, parent } = await startAssignment();
     f.deliver.mockResolvedValue({ delivered: false, path: "none", error: "Unavailable" });

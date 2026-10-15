@@ -145,15 +145,9 @@ describe("native subagent submission receipts in the binding store", () => {
         statusLabel: "recorded_task_result" as const,
         result: "Preserve the recorded result",
       };
-      const aliases = [
-        first,
-        {
-          ...first,
-          runId: "codex-thread:child-thread",
-          submission: undefined,
-          recordedCompletion,
-        },
-      ];
+      const { submission: _submission, ...unsubmitted } = first;
+      const alias = { ...unsubmitted, runId: "codex-thread:child-thread" };
+      const aliases = [first, { ...alias, recordedCompletion }];
       if (reverse) {
         aliases.reverse();
       }
@@ -171,7 +165,7 @@ describe("native subagent submission receipts in the binding store", () => {
         {
           kind: "record-native-subagent-assignment",
           owner,
-          assignment: { ...first, runId: "codex-thread:child-thread", submission: undefined },
+          assignment: alias,
         },
         currentAuthority,
       );
@@ -195,7 +189,7 @@ describe("native subagent submission receipts in the binding store", () => {
       const retirement = {
         kind: "consume-native-subagent-assignment" as const,
         owner,
-        assignment: { ...first, runId: "codex-thread:child-thread", submission: undefined },
+        assignment: alias,
         undelivered: true as const,
       };
       await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(true);
@@ -234,6 +228,7 @@ describe("native subagent submission receipts in the binding store", () => {
         nativeTurnId: stopReceipt.submissionId,
         nativeParentThreadId: binding.threadId,
         owner,
+        submission: stopReceipt,
       };
       const assignmentRecorded = createDeferred<boolean>();
       const receiptRecorded = createDeferred<boolean>();

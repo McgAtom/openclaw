@@ -6,12 +6,12 @@ import {
   readPluginControlUiAssets,
 } from "../../../../src/plugins/control-ui-assets.ts";
 import { loadPluginManifest } from "../../../../src/plugins/manifest.ts";
-import type { ControlUiBuildInfo } from "../../build-info.ts";
 import { createControlUiE2eSuite } from "../../e2e/control-ui-e2e-suite.test-support.ts";
 import {
   defaultControlUiFeatureMethods,
   installMockGateway,
   startBuiltControlUiE2eServer,
+  waitForConfirmModal,
 } from "../../test-helpers/control-ui-e2e.ts";
 import { workboardUi } from "../../test-helpers/control-ui-workboard-fixture.ts";
 
@@ -45,26 +45,15 @@ suite.define(() => {
     });
     const revision = pluginControlUiRevision(controlUi, uiCapabilities, build.assets);
     const pkg = JSON.parse(await fs.readFile(path.join(pluginRoot, "package.json"), "utf8"));
-    const buildInfo: Pick<ControlUiBuildInfo, "buildId" | "version"> = JSON.parse(
-      await fs.readFile(path.join(repoRoot, "dist/build-info.json"), "utf8"),
-    );
     const gatewayUrl = "ws://gateway.example/ws";
     const gatewayPrefix = `http://gateway.example/__openclaw__/plugins/control-ui/workboard/${revision}/`;
     const board = { id: "ops", name: "Operations", total: 0, active: 0, archived: 0, byStatus: {} };
     await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
       const errors: string[] = [];
-      const consoleErrors: string[] = [];
       const requests: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      page.on("console", (message) => {
-        if (message.type() === "error") {
-          consoleErrors.push(message.text());
-        }
-      });
       page.on("request", (request) => requests.push(request.url()));
       const gateway = await installMockGateway(page, {
-        serverBuildId: buildInfo.buildId,
-        serverVersion: buildInfo.version ?? undefined,
         controlUiTabs: workboardUi.controlUiTabs,
         pluginAssetsRequireAuth: true,
         featureMethods: [
@@ -99,29 +88,10 @@ suite.define(() => {
       const response = await page.goto(url.href);
       expect(response?.status()).toBe(200);
       expect(errors).toEqual([]);
-      try {
-        await page.getByRole("button", { name: "Switch to gateway.example", exact: true }).click();
-      } catch (error) {
-        const startup = await page
-          .evaluate(() => ({
-            readyState: document.readyState,
-            appPresent: Boolean(document.querySelector("openclaw-app")),
-            confirmationPresent: Boolean(
-              document.querySelector("openclaw-gateway-url-confirmation"),
-            ),
-            bodyText: document.body.textContent?.slice(0, 1_000) ?? "",
-          }))
-          .catch((captureError: unknown) => ({
-            captureError: String(captureError).slice(0, 1_000),
-          }));
-        console.error("Workboard startup failure", {
-          navigationStatus: response?.status(),
-          errors: errors.slice(-10).map((message) => message.slice(0, 1_000)),
-          consoleErrors: consoleErrors.slice(-10).map((message) => message.slice(0, 1_000)),
-          startup,
-        });
-        throw error;
-      }
+      const confirmation = await waitForConfirmModal(page);
+      await confirmation
+        .getByRole("button", { name: "Switch to gateway.example", exact: true })
+        .click();
       await page.locator(".workboard-page-title").filter({ hasText: "Operations" }).waitFor();
       expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
       expect((await gateway.getSocketUrls()).at(-1)).toBe(gatewayUrl);

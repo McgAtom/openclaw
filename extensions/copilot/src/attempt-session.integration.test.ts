@@ -170,7 +170,8 @@ describe("Copilot canonical session persistence", () => {
           contextWindow: 128_000,
           maxTokens: 4096,
         },
-        promptMode: "none",
+        // Raw prompts omit SDK tools; this fixture exercises the ordinary tool bridge.
+        promptMode: "minimal",
       } satisfies AgentHarnessAttemptParamsV2 & Pick<AttemptParamsLike, "auth">;
       const pending = runCopilotAttempt(params, { pool }).finally(() => {
         attemptSettled = true;

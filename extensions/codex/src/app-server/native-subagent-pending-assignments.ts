@@ -105,7 +105,11 @@ function mergeNativeAssignmentMetadata(
   current: CodexNativeSubagentPendingAssignment,
   incoming: CodexNativeSubagentPendingAssignment,
 ): void {
+  const genericRunId = codexNativeSubagentRunId(current.childThreadId);
   if (
+    (current.runId !== incoming.runId &&
+      current.runId !== genericRunId &&
+      incoming.runId !== genericRunId) ||
     (current.submission &&
       incoming.submission &&
       !isDeepStrictEqual(current.submission, incoming.submission)) ||
@@ -115,8 +119,11 @@ function mergeNativeAssignmentMetadata(
   ) {
     throw new Error("Conflicting Codex native pending assignment metadata.");
   }
-  if (incoming.submission) {
+  // A resumed turn still needs its original submission locator to retire the receipt.
+  if (current.runId === genericRunId) {
     current.runId = incoming.runId;
+  }
+  if (incoming.submission) {
     current.submission = incoming.submission;
   }
   if (incoming.recordedCompletion) {

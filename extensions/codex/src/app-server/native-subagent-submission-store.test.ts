@@ -109,9 +109,13 @@ async function fixture(initialReceipt?: CodexNativeSubagentSubmission) {
 }
 
 describe("native subagent submission receipts in the binding store", () => {
-  it.each(["child-turn-b", "resumed-turn"])(
-    "deduplicates and durably retires only the exact child turn and receipt (%s)",
-    async (nativeTurnId) => {
+  it.each([
+    { nativeTurnId: "child-turn-b", reverse: false },
+    { nativeTurnId: "resumed-turn", reverse: false },
+    { nativeTurnId: "resumed-turn", reverse: true },
+  ])(
+    "deduplicates and durably retires only the exact child turn and receipt ($nativeTurnId, reverse=$reverse)",
+    async ({ nativeTurnId, reverse }) => {
       const { root, state, store, owner } = await fixture(receipt);
       const first = {
         runId: "codex-thread:child-thread:turn:child-turn-b",
@@ -141,21 +145,21 @@ describe("native subagent submission receipts in the binding store", () => {
         statusLabel: "recorded_task_result" as const,
         result: "Preserve the recorded result",
       };
+      const aliases = [
+        first,
+        {
+          ...first,
+          runId: "codex-thread:child-thread",
+          submission: undefined,
+          recordedCompletion,
+        },
+      ];
+      if (reverse) {
+        aliases.reverse();
+      }
       state.register(bindingStoreKey(identity), {
         ...row,
-        nativeSubagentAssignments: {
-          version: 1,
-          assignments: [
-            first,
-            {
-              ...first,
-              runId: "codex-thread:child-thread",
-              submission: undefined,
-              recordedCompletion,
-            },
-            second,
-          ],
-        },
+        nativeSubagentAssignments: { version: 1, assignments: [...aliases, second] },
       });
       await store.mutate(
         identity,

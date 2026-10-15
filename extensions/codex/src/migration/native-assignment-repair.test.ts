@@ -294,7 +294,7 @@ describe("Codex native assignment Doctor repair", () => {
     expect(await migration.migrateLegacyState(state.params)).toEqual({ changes: [], warnings: [] });
   });
 
-  it("preserves conflicting completion facts and uncertain requester ownership", async () => {
+  it("preserves conflicting assignment facts and uncertain requester ownership", async () => {
     const result = {
       childThreadId: "child",
       status: "succeeded" as const,
@@ -312,6 +312,15 @@ describe("Codex native assignment Doctor repair", () => {
     const conflicted = await migration.migrateLegacyState(conflict.params);
     expect(conflict.read()).toEqual(conflict.original);
     expect(conflicted.warningDisposition).toBe("recoverable");
+
+    const locators = fixture([
+      assignment,
+      { ...assignment, runId: "codex-thread:child:turn:other-submission" },
+    ]);
+    expect((await migration.migrateLegacyState(locators.params)).warningDisposition).toBe(
+      "recoverable",
+    );
+    expect(locators.read()).toEqual(locators.original);
 
     sessionStore.getSessionEntryByIdAsync.mockRejectedValue(
       new Error("Requester store unavailable"),

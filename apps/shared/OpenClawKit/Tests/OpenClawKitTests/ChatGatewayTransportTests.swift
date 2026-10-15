@@ -122,63 +122,6 @@ struct ChatGatewayTransportTests {
         #expect(requests[3].params["agentId"]?.value as? String == "other")
     }
 
-    @Test func `session list defaults use the selected agent and preserve explicit owners`() async throws {
-        let recorder = RequestRecorder()
-        let transport: any OpenClawChatTransport = Transport(request: { request in
-            await recorder.append(request)
-            return Data(#"{"sessions":[{"key":"global"},{"key":"agent:other:main"}]}"#.utf8)
-        })
-        let selected = try await transport.listSessions(limit: 5, search: nil, archived: false)
-        let explicit = try await transport.listSessions(limit: 5, search: nil, archived: false, agentID: "manager")
-        #expect(selected.sessions.map(\.agentId) == ["reviewer", "other"])
-        #expect(explicit.sessions.map(\.agentId) == ["manager", "other"])
-        let requests = await recorder.requests
-        #expect(requests.map(\.method) == ["sessions.list", "sessions.list"])
-        #expect(requests.map { $0.params["agentId"]?.value as? String } == ["reviewer", "manager"])
-    }
-
-    @Test func `child session pages use the captured request while retaining parent filters`() async throws {
-        let recorder = RequestRecorder()
-        let transport = Transport(request: { _ in throw Failure.unexpectedRequest })
-        let result = try await transport.listChildSessions(parentKey: "agent:reviewer:parent") { request in
-            await recorder.append(request)
-            if request.params["offset"]?.value as? Int == 0 {
-                return Data(#"{"sessions":[{"key":"child-a"}],"hasMore":true,"nextOffset":2}"#.utf8)
-            }
-            return Data(#"{"sessions":[{"key":"child-b"}],"hasMore":false}"#.utf8)
-        }
-        #expect(Set(result.rows.map(\.key)) == ["child-a", "child-b"])
-        #expect(result.isComplete)
-        let requests = await recorder.requests
-        #expect(requests.map { $0.params["offset"]?.value as? Int } == [0, 2])
-        for request in requests {
-            #expect(request.method == "sessions.list")
-            #expect(request.params["spawnedBy"]?.value as? String == "agent:reviewer:parent")
-            #expect(request.params["configuredAgentsOnly"]?.value as? Bool == true)
-            #expect(request.params["includeGlobal"]?.value as? Bool == false)
-        }
-    }
-
-    @Test func `metadata and compaction use the supplied authority request and propagate rejection`() async throws {
-        let recorder = RequestRecorder()
-        let transport = Transport(request: { _ in throw Failure.unexpectedRequest })
-        #expect(try await transport.isSwarmEnabled(sessionKey: "global") { request in
-            await recorder.append(request)
-            return Data(#"{"swarmEnabled":true}"#.utf8)
-        })
-        try await transport.compactSession(sessionKey: "global") { request in
-            await recorder.append(request)
-            return Data(#"{"ok":true}"#.utf8)
-        }
-        await #expect(throws: Failure.retiredRoute) {
-            try await transport.compactSession(sessionKey: "global") { _ in throw Failure.retiredRoute }
-        }
-        let requests = await recorder.requests
-        #expect(requests.map(\.method) == ["chat.metadata", "sessions.compact"])
-        #expect(requests[1].params["key"]?.value as? String == "global")
-        #expect(requests[1].params["agentId"]?.value as? String == "reviewer")
-    }
-
     private enum Failure: Error { case unexpectedRequest, retiredRoute }
 
     private actor RequestRecorder {

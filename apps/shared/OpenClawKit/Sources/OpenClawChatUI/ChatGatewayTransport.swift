@@ -16,63 +16,6 @@ extension OpenClawChatGatewayTransport {
         true
     }
 
-    public func listSessions(
-        limit: Int?,
-        search: String?,
-        archived: Bool) async throws -> OpenClawChatSessionsListResponse
-    {
-        try await self.listSessions(
-            limit: limit, search: search, archived: archived, agentID: self.chatGatewayAgentID)
-    }
-
-    public func listSessions(
-        limit: Int?,
-        search: String?,
-        archived: Bool,
-        agentID: String?) async throws -> OpenClawChatSessionsListResponse
-    {
-        let data = try await self.requestChatGateway(OpenClawChatGatewayRequests.sessionsList(
-            limit: limit, search: search, archived: archived, agentID: agentID))
-        return try OpenClawChatGatewayPayloadCodec.decodeSessionsList(data, agentID: agentID)
-    }
-
-    public func listChildSessions(
-        parentKey: String,
-        request: @Sendable (OpenClawChatGatewayRequest) async throws -> Data) async throws
-        -> OpenClawChatChildSessionsResult
-    {
-        try await OpenClawChatChildSessionPager.collect { offset in
-            let data = try await request(OpenClawChatGatewayRequests.sessionsList(
-                limit: 10000,
-                search: nil,
-                archived: false,
-                includeGlobal: false,
-                spawnedBy: parentKey,
-                offset: offset,
-                configuredAgentsOnly: true))
-            return try JSONDecoder().decode(OpenClawChatSessionsListResponse.self, from: data)
-        }
-    }
-
-    public func isSwarmEnabled(
-        sessionKey: String,
-        request: @Sendable (OpenClawChatGatewayRequest) async throws -> Data) async throws -> Bool
-    {
-        let data = try await request(OpenClawChatGatewayRequests.chatMetadata(
-            sessionKey: sessionKey, fallbackAgentID: self.chatGatewayAgentID))
-        return try JSONDecoder().decode(OpenClawChatMetadataCapabilities.self, from: data).swarmEnabled
-    }
-
-    public func compactSession(
-        sessionKey: String,
-        request: @Sendable (OpenClawChatGatewayRequest) async throws -> Data) async throws
-    {
-        let target = self.sessionTarget(for: sessionKey, overrideAgentID: nil)
-        let data = try await request(OpenClawChatGatewayRequests.compactSession(
-            sessionKey: target.sessionKey, agentID: target.agentID))
-        try OpenClawSessionsCompactResponse.requireSuccess(from: data)
-    }
-
     public func reactionsRouteLease(
         routeID: UUID,
         access: OpenClawChatReactionAccess,

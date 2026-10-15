@@ -84,7 +84,7 @@ type SidebarPanelDefinitionParams = {
     target: Extract<ControlUiFocusBuildTarget, { kind: "desktop" }>,
   ) => void;
   dashboard: TemplateResult | typeof nothing;
-  workspace: SidebarPanelDefinition["content"];
+  workspace: TemplateResult | typeof nothing;
   renderDetail: (content: SidebarContent) => TemplateResult;
   digest: SessionObserverDigest | null;
   activeRunId: string | null;
@@ -133,7 +133,7 @@ export function sidebarPanelDefinitions(
   const definePanel = (
     slot: Exclude<SidebarSlotId, `plugin:${string}` | "link-reader">,
     icon: TemplateResult,
-    content: SidebarPanelDefinition["content"],
+    content: TemplateResult | typeof nothing | null,
     headerAction?: TemplateResult,
   ): SidebarPanelDefinition => {
     const textKey = slot === "detail" ? "review" : slot === "workspace" ? "files" : slot;
@@ -275,7 +275,7 @@ export function sidebarPanelDefinitions(
           .tabsInHeader=${sidebarMainPanel(state.sidebarLayout)?.slot !== "workspace"}
           .previews=${presentedProperty(params.panePresentation ?? true, workspace.previews, [])}
           .activeId=${presentedProperty(params.panePresentation ?? true, workspace.activePreviewId, null)}
-          .browser=${html`${params.workspace}`}
+          .browser=${params.workspace}
           .renderDetail=${params.renderDetail}
           .onSelect=${(id: string | null) => selectSessionWorkspacePreview(state, id)}
           .onClose=${(id: string) => closeSessionWorkspacePreview(state, id)}

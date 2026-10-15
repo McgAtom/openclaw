@@ -245,7 +245,10 @@ describe("forwarded message attribution", () => {
       expect(forwardedGroup).not.toBeNull();
       expect(forwardedGroup?.classList.contains("chat-group--sender-tint")).toBe(true);
       expect(forwardedGroup?.style.getPropertyValue("--chat-sender-hue")).not.toBe("");
-      const attribution = container.querySelector(".chat-group--forwarded .chat-reply-attribution");
+      const attribution = expectDefined(
+        forwardedGroup?.querySelector(".chat-group-messages > .chat-reply-attribution"),
+        "direct forwarded attribution",
+      );
       const link = attribution?.querySelector<HTMLAnchorElement>(
         'a.markdown-session-link[data-session-key="agent:main:main"]',
       );
@@ -256,7 +259,7 @@ describe("forwarded message attribution", () => {
         forwardedGroup?.querySelector(".chat-bubble"),
         "forwarded message bubble",
       );
-      expect(attribution?.compareDocumentPosition(bubble)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(attribution.nextElementSibling).toBe(bubble);
       expect(container.querySelector(".chat-avatar, .chat-avatar-slot")).toBeNull();
       expect(container.querySelector(".chat-group-footer .chat-sender-name")).toBeNull();
       expect(container.querySelector(".chat-group-footer .chat-group-timestamp")).not.toBeNull();

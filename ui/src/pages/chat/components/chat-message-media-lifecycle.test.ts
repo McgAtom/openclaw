@@ -184,7 +184,7 @@ describe("chat media resource lifecycle", () => {
       ]);
       expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(
         managed
-          ? [variant === "full" ? source : source.replace(/\/full$/u, "/thumbnail") + "?v=3"]
+          ? [variant === "full" ? source : source.replace(/\/full$/u, "/thumbnail") + "?v=4"]
           : [],
       );
       expect(container.querySelector("img")?.getAttribute("src")).toBe(blobUrl);

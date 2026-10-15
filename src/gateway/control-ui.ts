@@ -334,7 +334,12 @@ export async function handleControlUiAssistantMediaRequest(
           )
         : path.basename(media.reference.path);
     const mediaKind = kindFromMime(contentType);
-    if (mediaKind === "image" && url.searchParams.get("variant") === "thumbnail") {
+    // Local assistant-media previews retain their original animation bytes.
+    if (
+      media.reference.kind === "inbound" &&
+      mediaKind === "image" &&
+      url.searchParams.get("variant") === "thumbnail"
+    ) {
       const { readImageThumbnailFromFile } = await import("./managed-image-thumbnail-cache.js");
       const thumbnail = await readImageThumbnailFromFile(
         opened,

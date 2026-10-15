@@ -2,7 +2,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as markdown from "../../../components/markdown.ts";
-import { createMessageGroupHarness } from "./chat-message-native.test-support.tsx";
+import { mountSolid } from "../../../test-helpers/solid-render.tsx";
+import { MessageGroup } from "./chat-message-group-view.tsx";
 import {
   createAssistantMessage,
   createAttachmentBlock,
@@ -11,7 +12,7 @@ import {
 } from "./chat-message.test-support.ts";
 
 let view: HTMLDivElement;
-const renderedContainers = new Map<HTMLElement, ReturnType<typeof createMessageGroupHarness>>();
+const views: Array<ReturnType<typeof mountSolid>> = [];
 
 beforeEach(() => {
   view = document.createElement("div");
@@ -23,16 +24,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [container, root] of renderedContainers) {
-    root.unmount();
-    container.remove();
+  for (const mounted of views) {
+    mounted.dispose();
+    mounted.container.remove();
   }
-  renderedContainers.clear();
+  views.length = 0;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
-type RenderOptions = Parameters<ReturnType<typeof createMessageGroupHarness>["render"]>[1];
+type RenderOptions = Parameters<typeof MessageGroup>[0]["options"];
 
 function renderGroupedMessage(
   message: unknown,
@@ -40,22 +41,26 @@ function renderGroupedMessage(
   opts: Partial<RenderOptions> = {},
   container: HTMLElement = view,
 ) {
-  let root = renderedContainers.get(container);
-  if (!root) {
-    root = createMessageGroupHarness(container);
-    renderedContainers.set(container, root);
-  }
   const group = createMessageGroup(message, role, {
     key: `${role}-group`,
     messages: [{ key: `${role}-message`, message }],
   });
-  root.render(group, {
-    showReasoning: true,
-    showToolCalls: true,
-    assistantName: "OpenClaw",
-    assistantAvatar: null,
-    ...opts,
-  });
+  views.push(
+    mountSolid(
+      MessageGroup,
+      {
+        group,
+        options: {
+          showReasoning: true,
+          showToolCalls: true,
+          assistantName: "OpenClaw",
+          assistantAvatar: null,
+          ...opts,
+        },
+      },
+      container,
+    ),
+  );
 }
 
 function renderAssistantMessage(

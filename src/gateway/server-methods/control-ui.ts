@@ -185,13 +185,13 @@ async function withControlUiSessionPreview(
     consume(null);
     return;
   }
-  const cfg = context.getRuntimeConfig();
-  const owner = resolveRequestedGlobalAgentId(cfg, sessionKey);
-  const preview = owner.ok
-    ? projection.readPreview({ key: sessionKey, agentId: owner.agentId })
+  const previewConfig = context.getRuntimeConfig();
+  const previewOwner = resolveRequestedGlobalAgentId(previewConfig, sessionKey);
+  const preview = previewOwner.ok
+    ? projection.readPreview({ key: sessionKey, agentId: previewOwner.agentId })
     : null;
   if (preview !== undefined) {
-    const entryFilter = createSessionListEntryFilter({ client, cfg });
+    const entryFilter = createSessionListEntryFilter({ client, cfg: previewConfig });
     consume(
       preview && (!entryFilter || entryFilter(preview.sessionKey, preview.entry)) ? preview : null,
     );

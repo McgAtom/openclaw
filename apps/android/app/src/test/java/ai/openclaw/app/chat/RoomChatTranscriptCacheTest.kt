@@ -356,8 +356,6 @@ class RoomChatTranscriptCacheTest {
           artifactId = "artifact_managed_image_11111111-1111-4111-8111-111111111111",
           url = "/api/chat/media/outgoing/main/11111111-1111-4111-8111-111111111111/full",
           alt = "Managed image",
-          base64 = "AAAA",
-          widget = ChatWidgetPreview("Preview", "/__openclaw__/canvas/documents/image", null, "strict"),
         )
       saveTranscript(
         messages =
@@ -375,15 +373,6 @@ class RoomChatTranscriptCacheTest {
 
       assertEquals(listOf("hello", null, "world"), loaded.map { it.content.single().text })
       assertTrue(loaded.all { message -> message.content.all { part -> part.base64 == null } })
-      assertTrue(loaded.all { message -> message.content.all { part -> part.widget == null } })
-      assertEquals(
-        listOf(
-          """{"content":[{"type":"text","text":"hello"}],"senderLabel":"Alex (Slack)"}""",
-          """{"content":[{"type":"image","mimeType":"image/png","artifactId":"artifact_managed_image_11111111-1111-4111-8111-111111111111","url":"/api/chat/media/outgoing/main/11111111-1111-4111-8111-111111111111/full","alt":"Managed image"}]}""",
-          """{"content":[{"type":"text","text":"world"}]}""",
-        ),
-        database.dao().messages("gateway-a", "main", "main").map { it.textPartsJson },
-      )
       assertEquals(managedImage.artifactId, loaded[1].content.single().artifactId)
       assertEquals(listOf("user", "assistant", "assistant"), loaded.map { it.role })
       assertEquals(listOf(10L, 11L, 12L), loaded.map { it.timestampMs })

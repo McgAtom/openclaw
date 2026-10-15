@@ -20,8 +20,26 @@ internal const val MAX_CACHED_SESSIONS = 50
 internal const val MAX_CACHED_MESSAGES_PER_SESSION = 200
 
 @Serializable
+private data class CachedMessageContent(
+  val type: String,
+  val text: String? = null,
+  val mimeType: String? = null,
+  val fileName: String? = null,
+  val artifactId: String? = null,
+  val url: String? = null,
+  val openUrl: String? = null,
+  val alt: String? = null,
+  val width: Int? = null,
+  val height: Int? = null,
+  val sizeBytes: Long? = null,
+  val durationMs: Long? = null,
+  val playback: String? = null,
+  val toolActivity: ChatToolActivity? = null,
+)
+
+@Serializable
 private data class CachedMessagePayload(
-  val content: List<ChatMessageContent>,
+  val content: List<CachedMessageContent>,
   val provenance: ChatMessageProvenance? = null,
   @SerialName("__openclaw") val transcriptMarker: ChatTranscriptMarker? = null,
   val senderLabel: String? = null,
@@ -247,7 +265,7 @@ class RoomChatTranscriptCache internal constructor(
 
   private val json = Json { ignoreUnknownKeys = true }
   private val cachedPayloadSerializer = CachedMessagePayload.serializer()
-  private val cachedContentSerializer = ListSerializer(ChatMessageContent.serializer())
+  private val cachedContentSerializer = ListSerializer(CachedMessageContent.serializer())
   private val legacyTextPartsSerializer = ListSerializer(String.serializer())
 
   override suspend fun loadLastDefaultAgentId(gatewayId: String): String? {
@@ -309,7 +327,25 @@ class RoomChatTranscriptCache internal constructor(
       ChatMessage(
         id = UUID.randomUUID().toString(),
         role = role,
-        content = payload.content,
+        content =
+          payload.content.map { part ->
+            ChatMessageContent(
+              type = part.type,
+              text = part.text,
+              mimeType = part.mimeType,
+              fileName = part.fileName,
+              artifactId = part.artifactId,
+              url = part.url,
+              openUrl = part.openUrl,
+              alt = part.alt,
+              width = part.width,
+              height = part.height,
+              sizeBytes = part.sizeBytes,
+              durationMs = part.durationMs,
+              playback = part.playback,
+              toolActivity = part.toolActivity,
+            )
+          },
         timestampMs = row.timestampMs,
         idempotencyKey = row.idempotencyKey,
         // Canonical tree ids stay live-only; cached rows regain actions after history refresh.
@@ -389,17 +425,26 @@ class RoomChatTranscriptCache internal constructor(
               val isImage = part.type == "image"
               when {
                 part.type == "text" && !part.text.isNullOrBlank() -> {
-                  ChatMessageContent(type = "text", text = part.text)
+                  CachedMessageContent(type = "text", text = part.text)
                 }
 
                 part.toolActivity != null -> {
-                  ChatMessageContent(type = part.type, toolActivity = part.toolActivity)
+                  CachedMessageContent(type = part.type, toolActivity = part.toolActivity)
                 }
 
                 (isImage && !part.artifactId.isNullOrBlank() && !part.url.isNullOrBlank()) ||
                   part.type == "audio" || part.type == "video" || part.type == "file" -> {
-                  part.copy(
-                    text = null,
+                  CachedMessageContent(
+                    type = part.type,
+                    mimeType = part.mimeType,
+                    fileName = part.fileName,
+                    artifactId = part.artifactId,
+                    url = part.url,
+                    openUrl = part.openUrl,
+                    alt = part.alt,
+                    width = part.width,
+                    height = part.height,
+                    sizeBytes = part.sizeBytes,
                     durationMs = part.durationMs.takeUnless { isImage },
                     playback = part.playback.takeUnless { isImage },
                   )
@@ -513,7 +558,7 @@ class RoomChatTranscriptCache internal constructor(
         runCatching { json.decodeFromString(cachedContentSerializer, encoded) }.getOrElse {
           runCatching { json.decodeFromString(legacyTextPartsSerializer, encoded) }
             .getOrDefault(emptyList())
-            .map { ChatMessageContent(type = "text", text = it) }
+            .map { CachedMessageContent(type = "text", text = it) }
         }
       CachedMessagePayload(content = content)
     }

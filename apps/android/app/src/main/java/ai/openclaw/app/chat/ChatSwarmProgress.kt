@@ -58,18 +58,38 @@ internal suspend fun collectChatSwarmChildSessions(
   fetchPage: suspend (Int) -> ChatSwarmSessionPage,
 ): List<ChatSessionEntry> {
   val rowsByKey = linkedMapOf<String, ChatSessionEntry>()
-  var offset = 0
-  // A moving roster is best-effort; the next session event refreshes skipped workers.
-  repeat(MAX_SWARM_PAGE_REQUESTS) {
-    val page = fetchPage(offset)
-    for (row in page.sessions) {
-      rowsByKey[row.key] = row
+  var remainingPageRequests = MAX_SWARM_PAGE_REQUESTS
+  repeat(4) {
+    val rowsBeforePass = rowsByKey.size
+    var expectedTotal: Int? = null
+    val seenOffsets = mutableSetOf<Int>()
+    var offset = 0
+    while (
+      remainingPageRequests > 0 &&
+      rowsByKey.size < MAX_TRACKED_SWARM_CHILDREN &&
+      seenOffsets.add(offset)
+    ) {
+      remainingPageRequests -= 1
+      val page = fetchPage(offset)
+      expectedTotal = page.totalCount
+      for (row in page.sessions) {
+        rowsByKey[row.key] = row
+        if (rowsByKey.size >= MAX_TRACKED_SWARM_CHILDREN) break
+      }
       if (rowsByKey.size >= MAX_TRACKED_SWARM_CHILDREN) return rowsByKey.values.toList()
+      val hasMore = page.hasMore ?: expectedTotal?.let { offset + page.sessions.size < it } ?: false
+      val nextOffset = page.nextOffset ?: (offset + page.sessions.size)
+      if (!hasMore || page.sessions.isEmpty() || nextOffset <= offset) break
+      offset = nextOffset
     }
-    val hasMore = page.hasMore ?: page.totalCount?.let { offset + page.sessions.size < it } ?: false
-    val nextOffset = page.nextOffset ?: (offset + page.sessions.size)
-    if (!hasMore || page.sessions.isEmpty() || nextOffset <= offset) return rowsByKey.values.toList()
-    offset = nextOffset
+    val added = rowsByKey.size - rowsBeforePass
+    if (
+      remainingPageRequests == 0 ||
+      added == 0 ||
+      expectedTotal?.let { rowsByKey.size >= it } != false
+    ) {
+      return rowsByKey.values.toList()
+    }
   }
   return rowsByKey.values.toList()
 }

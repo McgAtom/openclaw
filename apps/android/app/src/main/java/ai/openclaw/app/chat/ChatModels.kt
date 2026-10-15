@@ -2,7 +2,6 @@ package ai.openclaw.app.chat
 
 import ai.openclaw.app.asJsonStringOrNull
 import ai.openclaw.app.gateway.SessionObserverDigest
-import kotlinx.serialization.Required
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -177,9 +176,8 @@ data class ChatTranscriptAnchorState(
 /**
  * One content part in a chat message; media carries either bounded base64 or a managed artifact reference.
  */
-@Serializable
 data class ChatMessageContent(
-  @Required val type: String = "text",
+  val type: String = "text",
   val text: String? = null,
   val mimeType: String? = null,
   val fileName: String? = null,
@@ -190,10 +188,10 @@ data class ChatMessageContent(
   val width: Int? = null,
   val height: Int? = null,
   val sizeBytes: Long? = null,
-  @kotlinx.serialization.Transient val base64: String? = null,
+  val base64: String? = null,
   val durationMs: Long? = null,
   val playback: String? = null,
-  @kotlinx.serialization.Transient val widget: ChatWidgetPreview? = null,
+  val widget: ChatWidgetPreview? = null,
   val toolActivity: ChatToolActivity? = null,
 )
 

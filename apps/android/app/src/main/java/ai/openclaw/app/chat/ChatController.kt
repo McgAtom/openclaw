@@ -597,6 +597,11 @@ class ChatController internal constructor(
     val requestSequence: Long,
   )
 
+  private data class SwarmProjectionSnapshot(
+    val lease: SwarmRefreshLease,
+    val sessions: List<ChatSessionEntry>,
+  )
+
   private val swarmActivityTracker = ChatSwarmActivityTracker()
   private val swarmLock = Any()
   private var swarmSessions: List<ChatSessionEntry> = emptyList()
@@ -4845,12 +4850,21 @@ class ChatController internal constructor(
   }
 
   private fun publishSwarmGroups(expectedLease: SwarmRefreshLease? = null) {
+    val snapshot =
+      synchronized(swarmLock) {
+        if (expectedLease != null && !isSwarmRefreshLeaseCurrentLocked(expectedLease)) return
+        val projectionCacheScope = expectedLease?.cacheScope ?: currentCacheScope() ?: return
+        SwarmProjectionSnapshot(
+          lease = SwarmRefreshLease(_sessionKey.value, projectionCacheScope, swarmRequestSequence.get()),
+          sessions = swarmActivityTracker.decorate(swarmSessions),
+        )
+      }
+    val groups =
+      buildChatSwarmGroups(snapshot.sessions) { candidate -> sameOutboxSession(candidate, snapshot.lease.parentKey) }
     synchronized(swarmLock) {
-      if (!swarmEnabled || currentCacheScope() == null) return
-      if (expectedLease != null && !isSwarmRefreshLeaseCurrentLocked(expectedLease)) return
-      val parentKey = _sessionKey.value
-      swarmSessionKey = parentKey
-      _swarmGroups.value = buildChatSwarmGroups(swarmActivityTracker.decorate(swarmSessions)) { candidate -> sameOutboxSession(candidate, parentKey) }
+      if (!isSwarmRefreshLeaseCurrentLocked(snapshot.lease)) return
+      swarmSessionKey = snapshot.lease.parentKey
+      _swarmGroups.value = groups
     }
   }
 
@@ -4925,7 +4939,7 @@ class ChatController internal constructor(
         swarmSessionKey = lease.parentKey
         swarmActivityTracker.clear()
       }
-      swarmSessions = rows
+      swarmSessions = swarmActivityTracker.decorate(rows)
     }
     publishSwarmGroups(lease)
   }

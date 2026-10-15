@@ -64,6 +64,7 @@ function fixture({
   minifiedMetadata = false,
   retainSourceFiles = false,
   retainImageFiles = false,
+  boundaryReaderModule = "",
 } = {}) {
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-image-metadata-"));
   temporaryRoots.push(runtime);
@@ -234,6 +235,7 @@ function fixture({
     bindPluginCacheRoot: (name: string) => getRoot(name),
     openPluginRootFileSync: safeOpen,
     openRootFileSync: rootOpen,
+    bundledRootFileOpen: rootOpen,
     readFileDescriptorBoundedSync,
     parseFrontmatterBlockResult,
     resolveHookManifestMetadata,
@@ -266,7 +268,14 @@ function fixture({
     ["extensions/mxc/src/plugin-root.ts", undefined],
     ["extensions/vault/src/cli.ts", "resolveResolverScriptPath"],
   ] as const) {
-    const source = ownerSource(file, name);
+    let source = ownerSource(file, name);
+    const boundaryImport =
+      boundaryReaderModule && name === "resolveNodeEntrypointArg"
+        ? `import { openRootFileSync as bundledRootFileOpen } from ${JSON.stringify(boundaryReaderModule)};\n`
+        : "";
+    if (boundaryImport) {
+      source = boundaryImport + source.replaceAll("openRootFileSync(", "bundledRootFileOpen(");
+    }
     const transformed = adapter.transform({
       filename: path.join(runtime, "dist/owner.js"),
       contents:
@@ -279,7 +288,9 @@ function fixture({
           : source,
     });
     vm.runInContext(
-      transformed.contents.replaceAll("import.meta.url", JSON.stringify(pathToFileURL(entry).href)),
+      transformed.contents
+        .replace(boundaryImport, "")
+        .replaceAll("import.meta.url", JSON.stringify(pathToFileURL(entry).href)),
       context,
     );
   }
@@ -1542,34 +1553,43 @@ describe("standalone image metadata", () => {
     ).toBeUndefined();
   });
 
-  it("admits declared embedded secret resolvers while retaining physical parent trust", () => {
-    const { runtime, plugin, secretEntrypoint, undeclaredEntrypoint, rootOpen, context } =
-      fixture();
-    const resolve = (pluginRoot: string, entrypoint = "./handlers/resolver.js") =>
-      context.resolveNodeEntrypointArg({
-        integration: { command: "${node}", args: [entrypoint] },
-        pluginRoot,
-        rejectHardlinks: true,
-      });
-    expect(resolve(plugin)).toBe(secretEntrypoint);
-    expect(rootOpen).not.toHaveBeenCalled();
-    expect(resolve(plugin, "./handlers/other.js")).toBeUndefined();
-    expect(rootOpen.mock.calls.at(-1)?.[0].absolutePath).toBe(undeclaredEntrypoint);
-    fs.chmodSync(path.dirname(secretEntrypoint), 0o777);
-    expect(resolve(plugin)).toBeUndefined();
-    fs.chmodSync(path.dirname(secretEntrypoint), 0o755);
-    fs.chmodSync(plugin, 0o777);
-    expect(resolve(plugin)).toBeUndefined();
-    fs.chmodSync(plugin, 0o755);
-    expect(resolve(plugin, "../example/handlers/resolver.js")).toBeUndefined();
-    const external = path.join(runtime, "external");
-    fs.mkdirSync(external);
-    fs.writeFileSync(path.join(external, "resolver.js"), "export {};\n");
-    expect(resolve(external, "./resolver.js")).toBe(path.join(external, "resolver.js"));
-    const alias = path.join(runtime, "plugin-alias");
-    fs.symlinkSync(plugin, alias);
-    expect(resolve(alias)).toBeUndefined();
+  it("rejects matching boundary reader exports from unrelated packages", () => {
+    expect(() => fixture({ boundaryReaderModule: "unrelated-package" })).toThrow(
+      "Unsupported standalone metadata owner: resolveNodeEntrypointArg",
+    );
   });
+
+  it.each(["", "@openclaw/fs-safe/advanced"])(
+    "admits embedded secret resolvers with physical parent trust (%s)",
+    (boundaryReaderModule) => {
+      const { runtime, plugin, secretEntrypoint, undeclaredEntrypoint, rootOpen, context } =
+        fixture({ boundaryReaderModule });
+      const resolve = (pluginRoot: string, entrypoint = "./handlers/resolver.js") =>
+        context.resolveNodeEntrypointArg({
+          integration: { command: "${node}", args: [entrypoint] },
+          pluginRoot,
+          rejectHardlinks: true,
+        });
+      expect(resolve(plugin)).toBe(secretEntrypoint);
+      expect(rootOpen).not.toHaveBeenCalled();
+      expect(resolve(plugin, "./handlers/other.js")).toBeUndefined();
+      expect(rootOpen.mock.calls.at(-1)?.[0].absolutePath).toBe(undeclaredEntrypoint);
+      fs.chmodSync(path.dirname(secretEntrypoint), 0o777);
+      expect(resolve(plugin)).toBeUndefined();
+      fs.chmodSync(path.dirname(secretEntrypoint), 0o755);
+      fs.chmodSync(plugin, 0o777);
+      expect(resolve(plugin)).toBeUndefined();
+      fs.chmodSync(plugin, 0o755);
+      expect(resolve(plugin, "../example/handlers/resolver.js")).toBeUndefined();
+      const external = path.join(runtime, "external");
+      fs.mkdirSync(external);
+      fs.writeFileSync(path.join(external, "resolver.js"), "export {};\n");
+      expect(resolve(external, "./resolver.js")).toBe(path.join(external, "resolver.js"));
+      const alias = path.join(runtime, "plugin-alias");
+      fs.symlinkSync(plugin, alias);
+      expect(resolve(alias)).toBeUndefined();
+    },
+  );
 
   it("resolves embedded MXC and Vault child entrypoints without probing JavaScript", async () => {
     const { runtime, mxc, mxcLauncher, vault, vaultResolver, context, adapter } = fixture();
@@ -1580,7 +1600,10 @@ describe("standalone image metadata", () => {
       filename: path.join(runtime, "dist/vault-cli.js"),
       contents: ownerSource("extensions/vault/src/cli.ts", "resolveResolverScriptPath"),
     });
-    context.pathExists = async (name: string) => fs.existsSync(name);
+    const diskProbe = vi.fn(() => {
+      throw new Error("Unexpected disk path probe");
+    });
+    context.pathExists = diskProbe;
     vm.runInContext(
       transformed.contents.replaceAll(
         "import.meta.url",
@@ -1589,6 +1612,7 @@ describe("standalone image metadata", () => {
       context,
     );
     expect(await context.resolveResolverScriptPath()).toBe(vaultResolver);
+    expect(diskProbe).not.toHaveBeenCalled();
   });
 
   it("keeps embedded launcher and ACPX bridge filename probes off disk", () => {

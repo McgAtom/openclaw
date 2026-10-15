@@ -56,13 +56,23 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
       return true;
     }
     for (const statement of ast.body) {
-      if (statement.type !== "ImportDeclaration" || !statement.source.value.startsWith(".")) {
+      if (statement.type !== "ImportDeclaration") {
         continue;
       }
       const imported = statement.specifiers.find(
         (specifier) => specifier.type === "ImportSpecifier" && specifier.local.name === callee.name,
       );
-      if (!imported || !filename) {
+      if (!imported) {
+        continue;
+      }
+      const importedName = imported.imported.name ?? imported.imported.value;
+      if (
+        statement.source.value === "@openclaw/fs-safe/advanced" &&
+        ["openRootFile", "openRootFileSync"].includes(expected)
+      ) {
+        return importedName === expected;
+      }
+      if (!statement.source.value.startsWith(".") || !filename) {
         continue;
       }
       const target = path.resolve(path.dirname(filename), statement.source.value);
@@ -85,7 +95,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
         }
         exportsByFile.set(target, exports);
       }
-      return exports.get(imported.imported.name ?? imported.imported.value) === expected;
+      return exports.get(importedName) === expected;
     }
     return false;
   };

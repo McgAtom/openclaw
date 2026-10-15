@@ -118,6 +118,12 @@ describe("standalone native sidecar", () => {
     pruneStandaloneRuntime(planStandaloneRuntime(root, finalized.files));
     for (const name of ["package.json", "LICENSE"]) {
       const expected = path.join(shared, name);
+      const resource = finalized.files.find(
+        (file) => path.join(root, file.destination) === expected,
+      );
+      expect(resource?.sources).toEqual(
+        helpers.map((helper) => `${path.relative(root, helper).split(path.sep).join("/")}/${name}`),
+      );
       for (const parent of parents) {
         expect(
           context["__openclawStandaloneNativeResolve"](

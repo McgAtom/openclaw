@@ -981,6 +981,8 @@ export function createStandaloneNativeAdapter({
               `Conflicting standalone resource ${file.destination}: ${previous.source} and ${file.source}`,
             );
           }
+          previous.sources ??= [previous.source];
+          previous.sources.push(file.source);
         } else {
           emittedFiles.set(file.destination, file);
         }

@@ -56,11 +56,11 @@ export function controlUiStableChunkName(id: string): string | undefined {
   const normalized = normalizeModuleId(id);
 
   if (
-    id === "\0rolldown/runtime.js" ||
-    /^\0@oxc-project\+runtime@[^/]+\/helpers\/esm\/decorate\.js$/u.test(id)
+    normalized.startsWith("\0@oxc-project+runtime@") &&
+    normalized.endsWith("/helpers/esm/decorate.js")
   ) {
-    // Shared decorator helpers must not make one lazy route depend on another.
-    return "rolldown-runtime";
+    // Chat and New Session still use decorators; neither route owns their shared helper.
+    return "decorator-runtime";
   }
 
   switch (controlUiBootManifestKey(id)) {

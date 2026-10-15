@@ -200,7 +200,13 @@ describe("annotation chip and hovercard", () => {
             scroll.scrollTop = scroll.scrollHeight;
             expect(scroll.scrollTop).toBeGreaterThan(0);
           }
-          const row = container.querySelector(".chat-comment-preview__item")!;
+          const rows = container.querySelectorAll(".chat-comment-preview__item");
+          const row = rows[0]!;
+          if (count > 1) {
+            expect(
+              rows[1]!.getBoundingClientRect().top - row.getBoundingClientRect().bottom,
+            ).toBeCloseTo(12, 0);
+          }
           const passages = row.querySelectorAll<HTMLElement>(".chat-comment-preview__text");
           const selection = passages[0]!;
           const comment = passages[1]!;

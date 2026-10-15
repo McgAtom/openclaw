@@ -1,7 +1,6 @@
+import type { JSX as SolidJSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, For, Show, untrack } from "solid-js";
 import { t } from "../../../lib/reactive/i18n.ts";
-import { defineSolidBridge } from "../../../lit/solid-bridge.ts";
-import { LitContent } from "../../../lit/solid-content.tsx";
 import { readAttachmentText } from "./chat-attachment-text-reader.ts";
 import { parseCommentAttachment, type CommentPreview } from "./chat-comment-preview.ts";
 import { CommentPreviewChip, CommentPreviewRow } from "./chat-comment-preview.tsx";
@@ -12,77 +11,103 @@ import {
 import { ChatAttachmentAdmission } from "./chat-message-attachment-admission-solid.tsx";
 import type { AttachmentItem, ImageRenderOptions } from "./chat-message-media.ts";
 
-export type SentCommentSource = {
+type SentCommentSource = {
   identity: string;
   src?: string;
   sizeBytes?: number;
   pending?: boolean;
-  fallback: unknown;
+  fallback: () => SolidJSX.Element;
 };
-type SentCommentsProps = {
+type Props = {
+  comments: AttachmentItem[];
+  options: ImageRenderOptions;
+  resolve: (item: AttachmentItem) => SentCommentSource;
+};
+
+export function SentCommentAttachments(props: Props) {
+  const renderComments = (admission?: AttachmentAdmission) => (
+    <SentComments
+      sources={props.comments.map((item) =>
+        admission?.observeElement
+          ? { identity: item.attachment.url, pending: true, fallback: () => undefined }
+          : props.resolve(item),
+      )}
+      scope={JSON.stringify([
+        props.options.sessionKey,
+        props.options.agentId,
+        props.options.messageId,
+        props.options.connectionEpoch,
+        props.options.resourceBasePath,
+        props.options.authToken,
+        props.options.policyKey,
+      ])}
+      admission={admission}
+    />
+  );
+  return (
+    <Show when={props.comments.length}>
+      <Show
+        when={props.comments.some((item) => needsAttachmentSourceAdmission(item.attachment))}
+        fallback={renderComments()}
+      >
+        <ChatAttachmentAdmission
+          attachments={props.comments.map((item) => item.attachment)}
+          options={props.options}
+          render={renderComments}
+        />
+      </Show>
+    </Show>
+  );
+}
+
+function SentComments(props: {
   sources: SentCommentSource[];
   scope: string;
   admission?: AttachmentAdmission;
-};
-
-function SentComments(props: SentCommentsProps) {
+}) {
+  const sources = createMemo(() => props.sources);
   const [revealed, setRevealed] = createSignal(false);
-  const identity = createMemo(() =>
-    JSON.stringify([
-      props.scope,
-      props.sources.map(({ fallback: _fallback, ...source }) => source),
-    ]),
+  // Ignore fallback JSX identity: sibling cards must not restart these reads.
+  const key = createMemo(() =>
+    JSON.stringify([props.scope, sources().map(({ fallback: _fallback, ...source }) => source)]),
   );
-  const [loaded, setLoaded] = createSignal<{
-    key: string;
-    comments: Array<CommentPreview | null | undefined>;
-  }>({ key: "", comments: [] });
-  const commentAt = (index: number) =>
-    loaded().key === identity()
-      ? loaded().comments[index]
-      : !props.sources[index]?.src && !props.sources[index]?.pending
-        ? null
-        : undefined;
+  const [comments, setComments] = createSignal<Array<CommentPreview | null | undefined>>(() => {
+    key();
+    return untrack(() =>
+      sources().map((source) => (!source.src && !source.pending ? null : undefined)),
+    );
+  });
   createEffect(
-    () => [identity(), revealed()] as const,
-    ([key, open]) => {
-      if (!open) {
+    () => ({ key: key(), revealed: revealed(), current: untrack(sources) }),
+    ({ revealed: wasRevealed, current: requestSources }) => {
+      if (!wasRevealed) {
         return undefined;
       }
-      const sources = untrack(() => props.sources);
       const controller = new AbortController();
-      let active = true;
-      setLoaded({
-        key,
-        comments: sources.map((source) => (!source.src && !source.pending ? null : undefined)),
-      });
-      sources.forEach((source, index) => {
+      requestSources.forEach((source, index) => {
         if (!source.src) {
           return;
         }
-        const accept = (comment: CommentPreview | null) => {
-          if (active && !controller.signal.aborted) {
-            setLoaded((current) => ({
-              key,
-              comments: current.comments.map((value, i) => (i === index ? comment : value)),
-            }));
-          }
-        };
-        void readAttachmentText(source.src, source.sizeBytes, controller.signal).then(
-          (text) => accept(parseCommentAttachment(text)),
-          () => accept(null),
-        );
+        void readAttachmentText(source.src, source.sizeBytes, controller.signal)
+          .then(
+            (text) => parseCommentAttachment(text),
+            () => null,
+          )
+          .then((comment) => {
+            if (!controller.signal.aborted) {
+              setComments((previous) =>
+                previous.map((value, i) => (i === index ? comment : value)),
+              );
+            }
+          });
       });
-      return () => {
-        active = false;
-        controller.abort();
-      };
+      return () => controller.abort();
     },
   );
-  const count = () => props.sources.filter((_, index) => commentAt(index) !== null).length;
+  const count = () => sources().filter((_, index) => comments()[index] !== null).length;
   return (
-    <>
-      <Show when={count() > 0}>
+    <openclaw-chat-sent-comments style={{ display: "contents" }}>
+      <Show when={count()}>
         <CommentPreviewChip
           count={count()}
           onReveal={() => {
@@ -92,14 +117,14 @@ function SentComments(props: SentCommentsProps) {
           elementRef={props.admission?.observeElement}
         >
           <ol class="chat-comment-preview__list" role="list">
-            <For each={props.sources}>
+            <For each={sources()} keyed={false}>
               {(source, index) => (
                 <Show
-                  when={commentAt(index())}
+                  when={comments()[index]}
                   fallback={
-                    commentAt(index()) === null ? null : (
+                    comments()[index] === null ? undefined : (
                       <li class="chat-comment-preview__item muted">
-                        {source.src || source.pending
+                        {source().src || source().pending
                           ? t("common.loading")
                           : t("chat.attachments.textPreviewUnavailable")}
                       </li>
@@ -113,70 +138,17 @@ function SentComments(props: SentCommentsProps) {
           </ol>
         </CommentPreviewChip>
       </Show>
-      <For each={props.sources}>
-        {(source, index) => (
-          <Show when={commentAt(index()) === null}>
-            <LitContent value={source.fallback} />
-          </Show>
-        )}
+      <For each={sources()} keyed={false}>
+        {(source, index) => <Show when={comments()[index] === null}>{source().fallback()}</Show>}
       </For>
-    </>
+    </openclaw-chat-sent-comments>
   );
 }
 
-const ChatSentComments = defineSolidBridge<SentCommentsProps>(
-  "openclaw-chat-sent-comments",
-  (props, host) => {
-    host.style.display = "contents";
-    return <SentComments {...props} />;
-  },
-  {
-    properties: {
-      sources: { default: [], attribute: false },
-      scope: { default: "" },
-      admission: { default: undefined, attribute: false },
-    },
-  },
-);
-
-export function SentCommentAttachments(props: {
-  comments: AttachmentItem[];
-  options: ImageRenderOptions;
-  resolve: (item: AttachmentItem) => SentCommentSource;
-}) {
-  const scope = () =>
-    JSON.stringify([
-      props.options.sessionKey,
-      props.options.agentId,
-      props.options.messageId,
-      props.options.connectionEpoch,
-      props.options.resourceBasePath,
-      props.options.authToken,
-      props.options.policyKey,
-    ]);
-  const content = (admission?: AttachmentAdmission) => (
-    <ChatSentComments
-      sources={props.comments.map((item) =>
-        admission?.observeElement
-          ? { identity: item.attachment.url, pending: true, fallback: undefined }
-          : props.resolve(item),
-      )}
-      scope={scope()}
-      admission={admission}
-    />
-  );
-  return (
-    <Show when={props.comments.length > 0}>
-      <Show
-        when={props.comments.some((item) => needsAttachmentSourceAdmission(item.attachment))}
-        fallback={content()}
-      >
-        <ChatAttachmentAdmission
-          attachments={props.comments.map((item) => item.attachment)}
-          options={props.options}
-          render={content}
-        />
-      </Show>
-    </Show>
-  );
+declare module "@solidjs/web" {
+  namespace JSX {
+    interface IntrinsicElements {
+      "openclaw-chat-sent-comments": HTMLAttributes<HTMLElement>;
+    }
+  }
 }

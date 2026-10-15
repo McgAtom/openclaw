@@ -709,41 +709,53 @@ describe("native pending assignment inventory through registered monitor admissi
     client.close();
   });
 
-  it("retries a rejected retirement without resending the completion", async () => {
-    const { f, client, parent } = await startAssignment();
-    f.deliver.mockResolvedValue({ delivered: false, path: "none", recoveryBlocked: true });
-    const mutate = f.store.mutate.bind(f.store);
-    let reject = true;
-    vi.spyOn(f.store, "mutate").mockImplementation((identity, mutation, guard, authority) => {
-      if (
-        mutation.kind === "consume-native-subagent-assignment" &&
-        mutation.undelivered &&
-        reject
-      ) {
-        reject = false;
-        return Promise.resolve(false);
-      }
-      return mutate(identity, mutation, guard, authority);
-    });
-    await client.notify(
-      childTurnCompletedNotification({
-        status: "completed",
-        items: [{ id: "final", type: "agentMessage", phase: "final_answer", text: "Result" }],
-      }),
-    );
-    await parent.unregister();
-    expect(
-      await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
-    ).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(5_000);
-    const settled = await f.register(client);
-    await settled.ready;
-    await settled.unregister();
-    expect(f.deliver).toHaveBeenCalledOnce();
-    expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
-    expect(await readVisibleSessionTranscriptMessageEntries(f.identity)).toHaveLength(1);
-    client.close();
-  });
+  it.each(["rejected write", "lost reply"])(
+    "retries retirement after %s without resending the completion",
+    async (failure) => {
+      const { f, client, parent } = await startAssignment();
+      f.deliver.mockResolvedValue({ delivered: false, path: "none", recoveryBlocked: true });
+      const mutate = f.store.mutate.bind(f.store);
+      let reject = true;
+      vi.spyOn(f.store, "mutate").mockImplementation(
+        async (identity, mutation, guard, authority) => {
+          if (
+            mutation.kind === "consume-native-subagent-assignment" &&
+            mutation.undelivered &&
+            reject
+          ) {
+            reject = false;
+            if (failure === "lost reply") {
+              await mutate(identity, mutation, guard, authority);
+              throw new Error("Binding retirement reply lost after commit");
+            }
+            return false;
+          }
+          return await mutate(identity, mutation, guard, authority);
+        },
+      );
+      await client.notify(
+        childTurnCompletedNotification({
+          status: "completed",
+          items: [{ id: "final", type: "agentMessage", phase: "final_answer", text: "Result" }],
+        }),
+      );
+      await parent.unregister();
+      expect(
+        await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
+      ).toHaveLength(failure === "lost reply" ? 0 : 1);
+      expect(await readVisibleSessionTranscriptMessageEntries(f.identity)).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const settled = await f.register(client);
+      await settled.ready;
+      await settled.unregister();
+      expect(f.deliver).toHaveBeenCalledOnce();
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+        [],
+      );
+      expect(await readVisibleSessionTranscriptMessageEntries(f.identity)).toHaveLength(1);
+      client.close();
+    },
+  );
 
   it("does not restore an assignment retired while native history was being read", async () => {
     const { f, client, parent } = await startAssignment();

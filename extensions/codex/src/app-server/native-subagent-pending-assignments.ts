@@ -146,12 +146,15 @@ export function mutateNativePendingAssignments(params: {
         entry.childThreadId === assignment.childThreadId &&
         entry.nativeTurnId === assignment.nativeTurnId),
   );
+  if (params.consume && !existing) {
+    return { applied: false, absent: true };
+  }
   if (
     (existing &&
       (!isDeepStrictEqual(existing.owner, assignment.owner) ||
         existing.nativeParentThreadId !== assignment.nativeParentThreadId ||
         existing.childThreadId !== assignment.childThreadId)) ||
-    (params.consume && (!existing || existing.nativeTurnId !== assignment.nativeTurnId))
+    (params.consume && existing?.nativeTurnId !== assignment.nativeTurnId)
   ) {
     return { applied: false };
   }

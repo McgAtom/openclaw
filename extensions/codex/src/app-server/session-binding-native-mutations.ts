@@ -78,7 +78,13 @@ export function mutateNativeSubagentBinding({
       consume: mutation.kind === "consume-native-subagent-assignment",
     });
     if (!changed.applied) {
-      return { result: false };
+      // A committed retirement can lose its reply; absence settles only this current owner.
+      return {
+        result:
+          mutation.kind === "consume-native-subagent-assignment" &&
+          mutation.undelivered === true &&
+          changed.absent === true,
+      };
     }
     const { nativeSubagentAssignments: _previous, ...bindingOwner } = current;
     const retired = changed.consumed;

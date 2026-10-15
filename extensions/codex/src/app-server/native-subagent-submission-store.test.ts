@@ -159,7 +159,14 @@ describe("native subagent submission receipts in the binding store", () => {
         undelivered: true as const,
       };
       await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(true);
-      await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(false);
+      await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(true);
+      await expect(
+        store.mutate(
+          identity,
+          { ...retirement, owner: { ...owner, lifecycleRevision: "other-lifecycle" } },
+          currentAuthority,
+        ),
+      ).resolves.toBe(false);
       await closeOpenClawStateDatabaseAsync();
       resetPluginStateStoreForTests();
       const reopened = createLazyCodexAppServerBindingStore(openState(root));
@@ -802,7 +809,7 @@ describe("native subagent submission receipts in the binding store", () => {
         undelivered: true as const,
       };
       await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(true);
-      await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(false);
+      await expect(store.mutate(identity, retirement, currentAuthority)).resolves.toBe(true);
       await closeOpenClawStateDatabaseAsync();
       resetPluginStateStoreForTests();
       const reopenedState = openState(root);

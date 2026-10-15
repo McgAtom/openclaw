@@ -144,10 +144,15 @@ describe("Codex native assignment Doctor repair", () => {
     expect(state.read()).toEqual(state.original);
   });
 
-  it.each(["authProfileId", "appServerRuntimeFingerprint"])(
-    "warns and preserves assignments when %s prevents ownership inspection",
-    async (field) => {
-      const state = fixture([assignment], { binding: { ...binding, [field]: 42 } });
+  it.each([
+    { field: "authProfileId", value: 42 },
+    { field: "appServerRuntimeFingerprint", value: 42 },
+    { field: "appServerRuntimeFingerprint", value: undefined },
+    { field: "appServerRuntimeFingerprint", value: "" },
+  ])(
+    "warns and preserves assignments when $field=$value prevents ownership inspection",
+    async ({ field, value }) => {
+      const state = fixture([assignment], { binding: { ...binding, [field]: value } });
 
       expect(await migration.detectLegacyState(state.params)).not.toBeNull();
       const repaired = await migration.migrateLegacyState(state.params);

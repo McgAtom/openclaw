@@ -44,6 +44,7 @@ async function normalizeRow(entry: BindingRow, params: Params, warnings: string[
   const originalAssignments = assignments;
   const identity = /^(session-key|session):([a-z0-9][a-z0-9_-]{0,63}):(.+)$/u.exec(entry.key);
   const binding = asOptionalRecord(raw.binding);
+  const fingerprint = codexNativeSubagentHistoryConnectionFingerprint(stored.binding);
   if (
     assignments.length > 0 &&
     identity &&
@@ -57,8 +58,7 @@ async function normalizeRow(entry: BindingRow, params: Params, warnings: string[
     binding.supervisionSourceThreadId === undefined &&
     binding.pendingSupervisionBranch === undefined &&
     (binding.authProfileId === undefined || typeof binding.authProfileId === "string") &&
-    (binding.appServerRuntimeFingerprint === undefined ||
-      typeof binding.appServerRuntimeFingerprint === "string") &&
+    fingerprint &&
     params.context.readSessionIdentityEvidenceBatch
   ) {
     try {
@@ -93,13 +93,12 @@ async function normalizeRow(entry: BindingRow, params: Params, warnings: string[
           sessionId: current.entry.sessionId,
           ...(identity[1] === "session-key" ? { sessionKey: current.sessionKey } : {}),
         });
-        const fingerprint = codexNativeSubagentHistoryConnectionFingerprint(stored.binding);
         let unknownLifecycle = false;
         assignments = assignments.filter((assignment) => {
           if (
             currentKey !== entry.key ||
             assignment.owner.sessionId !== current.entry.sessionId ||
-            (fingerprint && assignment.owner.connectionFingerprint !== fingerprint)
+            assignment.owner.connectionFingerprint !== fingerprint
           ) {
             return false;
           }

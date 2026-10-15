@@ -1,6 +1,9 @@
 import { isDurableAgentHarnessCompletionDelivery } from "openclaw/plugin-sdk/agent-harness-completion";
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { readCodexNativeSubagentRunId } from "./native-subagent-assignment.js";
+import {
+  codexNativeSubagentRunId,
+  readCodexNativeSubagentRunId,
+} from "./native-subagent-assignment.js";
 import { assertHistoryOwnerMatchesRegistration } from "./native-subagent-history-owner.js";
 import type {
   ChildState,
@@ -322,7 +325,9 @@ export class CodexNativeSubagentCompletionDelivery {
     if (!requesterSessionKey) {
       return true;
     }
-    const key = `${requesterSessionKey}\0${childState.runId}`;
+    const key =
+      childState.deliveryOwnerKey ??
+      `${requesterSessionKey}\0${childState.nativeTurnId ? codexNativeSubagentRunId(childState.childThreadId, childState.nativeTurnId) : childState.runId}`;
     try {
       state.assignmentStore?.assertCurrent();
       assertHistoryOwnerMatchesRegistration(

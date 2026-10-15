@@ -205,6 +205,7 @@ export async function fixture() {
   return {
     identity,
     binding,
+    state,
     store,
     deliver,
     register,

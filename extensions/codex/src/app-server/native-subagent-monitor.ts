@@ -317,7 +317,17 @@ class Monitor {
           },
         ),
       restore: async (state, assignment, recovery, custody) => {
-        const existing = this.childStates.get(assignment.runId);
+        const existing =
+          this.childStates.get(assignment.runId) ??
+          [...this.childStates.values()].find(
+            (child) =>
+              assignment.nativeTurnId !== undefined &&
+              child.childThreadId === assignment.childThreadId &&
+              child.nativeTurnId === assignment.nativeTurnId &&
+              child.nativeParentThreadId === assignment.nativeParentThreadId &&
+              child.historyOwner !== undefined &&
+              matchesNativeAssignmentLifecycle(child.historyOwner, assignment.owner),
+          );
         if (existing) {
           const original = this.parentStates.get(existing.parentThreadId);
           if (

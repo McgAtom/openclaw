@@ -110,12 +110,13 @@ async function fixture(initialReceipt?: CodexNativeSubagentSubmission) {
 
 describe("native subagent submission receipts in the binding store", () => {
   it.each([
-    { nativeTurnId: "child-turn-b", reverse: false },
-    { nativeTurnId: "resumed-turn", reverse: false },
-    { nativeTurnId: "resumed-turn", reverse: true },
+    { nativeTurnId: "child-turn-b", reverse: false, discoverTurn: false },
+    { nativeTurnId: "resumed-turn", reverse: false, discoverTurn: false },
+    { nativeTurnId: "resumed-turn", reverse: true, discoverTurn: false },
+    { nativeTurnId: "child-turn-b", reverse: false, discoverTurn: true },
   ])(
-    "deduplicates and durably retires only the exact child turn and receipt ($nativeTurnId, reverse=$reverse)",
-    async ({ nativeTurnId, reverse }) => {
+    "deduplicates and durably retires only the exact child turn and receipt ($nativeTurnId, reverse=$reverse, discoverTurn=$discoverTurn)",
+    async ({ nativeTurnId, reverse, discoverTurn }) => {
       const { root, state, store, owner } = await fixture(receipt);
       const first = {
         runId: "codex-thread:child-thread:turn:child-turn-b",
@@ -147,7 +148,8 @@ describe("native subagent submission receipts in the binding store", () => {
       };
       const { submission: _submission, ...unsubmitted } = first;
       const alias = { ...unsubmitted, runId: "codex-thread:child-thread" };
-      const aliases = [first, { ...alias, recordedCompletion }];
+      const { nativeTurnId: _nativeTurnId, ...unobserved } = alias;
+      const aliases = [first, { ...(discoverTurn ? unobserved : alias), recordedCompletion }];
       if (reverse) {
         aliases.reverse();
       }
@@ -198,6 +200,13 @@ describe("native subagent submission receipts in the binding store", () => {
         store.mutate(
           identity,
           { ...retirement, owner: { ...owner, lifecycleRevision: "other-lifecycle" } },
+          currentAuthority,
+        ),
+      ).resolves.toBe(false);
+      await expect(
+        store.mutate(
+          identity,
+          { ...retirement, assignment: { ...alias, runId: second.runId } },
           currentAuthority,
         ),
       ).resolves.toBe(false);

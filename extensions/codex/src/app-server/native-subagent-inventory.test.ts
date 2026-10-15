@@ -24,6 +24,7 @@ import {
 } from "./native-subagent-monitor.test-support.js";
 import { readCodexNativeSubagentSubmissions } from "./native-subagent-submission.js";
 import { setupRunAttemptTestHooks } from "./run-attempt-test-harness.js";
+import { bindingStoreKey } from "./session-binding-record.js";
 
 beforeEach(() => setRuntimeConfigSnapshot({}));
 afterEach(() => clearRuntimeConfigSnapshot());
@@ -662,21 +663,22 @@ describe("native pending assignment inventory through registered monitor admissi
     ).toThrow("Invalid Codex native subagent submission metadata");
   });
 
-  it("restores and delivers two distinct pending turns of the same child", async () => {
+  it("restores aliases once across clients while delivering distinct child turns", async () => {
     const f = await fixture();
-    for (const turnId of ["first-turn", "second-turn"]) {
+    const assignments = ["first-turn", "second-turn"].map((turnId) => ({
+      runId: `codex-thread:child-thread:turn:${turnId}`,
+      childThreadId: "child-thread",
+      nativeTurnId: turnId,
+      nativeParentThreadId: "parent-thread",
+      owner: f.historyOwner(),
+    }));
+    for (const assignment of assignments) {
       await f.store.mutate(
         f.identity,
         {
           kind: "record-native-subagent-assignment",
           owner: f.historyOwner(),
-          assignment: {
-            runId: `codex-thread:child-thread:turn:${turnId}`,
-            childThreadId: "child-thread",
-            nativeTurnId: turnId,
-            nativeParentThreadId: "parent-thread",
-            owner: f.historyOwner(),
-          },
+          assignment,
         },
         () => {},
       );
@@ -684,7 +686,17 @@ describe("native pending assignment inventory through registered monitor admissi
     expect(
       await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
     ).toHaveLength(2);
+    const row = f.state.lookup(bindingStoreKey(f.identity));
+    assert(row?.state === "active");
+    f.state.register(bindingStoreKey(f.identity), {
+      ...row,
+      nativeSubagentAssignments: {
+        version: 1,
+        assignments: [{ ...assignments[0]!, runId: "codex-thread:child-thread" }, ...assignments],
+      },
+    });
     const client = createClient();
+    const peerClient = createClient();
     const first = threadRead({
       turnId: "first-turn",
       result: "First result",
@@ -698,15 +710,31 @@ describe("native pending assignment inventory through registered monitor admissi
     assert(first.thread.turns && second.thread.turns);
     first.thread.turns.push(...second.thread.turns);
     client.setThreadRead("child-thread", first);
+    peerClient.setThreadRead("child-thread", first);
     const parent = await f.register(client);
-    await parent.ready;
-    await parent.unregister();
-    expect(f.deliver.mock.calls.map(([completion]) => completion.result)).toEqual([
-      "First result",
-      "Second result",
-    ]);
-    expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual([]);
-    client.close();
+    let peer: Awaited<ReturnType<typeof f.register>> | undefined;
+    try {
+      await parent.ready;
+      expect(parent.listPendingChildren()).toHaveLength(2);
+      peer = await f.register(peerClient);
+      await peer.ready;
+      expect(peer.listPendingChildren()).toEqual([]);
+      await peer.unregister();
+      expect(f.deliver).not.toHaveBeenCalled();
+      await parent.unregister();
+      expect(f.deliver.mock.calls.map(([completion]) => completion.result)).toEqual([
+        "First result",
+        "Second result",
+      ]);
+      expect(await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner())).toEqual(
+        [],
+      );
+    } finally {
+      await peer?.unregister();
+      await parent.unregister();
+      client.close();
+      peerClient.close();
+    }
   });
 
   it.each(["rejected write", "lost reply"])(

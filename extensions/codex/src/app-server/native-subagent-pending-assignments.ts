@@ -137,8 +137,12 @@ export function normalizeNativePendingAssignments(value: unknown) {
     return undefined;
   }
   const inventory = inventorySchema.parse(value);
+  return { version: 1 as const, assignments: mergeNativePendingAssignments(inventory.assignments) };
+}
+
+function mergeNativePendingAssignments(entries: CodexNativeSubagentPendingAssignment[]) {
   const assignments: CodexNativeSubagentPendingAssignment[] = [];
-  for (const entry of inventory.assignments) {
+  for (const entry of entries) {
     const existing = assignments.find(
       (saved) =>
         saved.childThreadId === entry.childThreadId &&
@@ -160,7 +164,7 @@ export function normalizeNativePendingAssignments(value: unknown) {
   if (new Set(assignments.map((entry) => entry.runId)).size !== assignments.length) {
     throw new Error("Conflicting Codex native pending assignment metadata.");
   }
-  return { version: 1 as const, assignments };
+  return assignments;
 }
 
 export function mutateNativePendingAssignments(params: {
@@ -176,13 +180,14 @@ export function mutateNativePendingAssignments(params: {
     return { applied: false };
   }
   const assignments = current?.assignments ?? [];
-  const existing = assignments.find(
-    (entry) =>
-      entry.runId === assignment.runId ||
-      (assignment.nativeTurnId !== undefined &&
+  const existing =
+    assignments.find((entry) => entry.runId === assignment.runId) ??
+    assignments.find(
+      (entry) =>
+        assignment.nativeTurnId !== undefined &&
         entry.childThreadId === assignment.childThreadId &&
-        entry.nativeTurnId === assignment.nativeTurnId),
-  );
+        entry.nativeTurnId === assignment.nativeTurnId,
+    );
   if (params.consume && !existing) {
     return { applied: false, absent: true };
   }
@@ -205,9 +210,13 @@ export function mutateNativePendingAssignments(params: {
     }
     remaining.push(assignment);
   }
+  const next =
+    !params.consume && existing && existing.nativeTurnId !== assignment.nativeTurnId
+      ? mergeNativePendingAssignments(remaining)
+      : remaining;
   return {
     applied: true,
-    next: remaining.length ? { version: 1 as const, assignments: remaining } : undefined,
+    next: next.length ? { version: 1 as const, assignments: next } : undefined,
     consumed: params.consume ? existing : undefined,
   };
 }

@@ -20,11 +20,11 @@ import {
   assertStandalonePlatform,
   createStandaloneManifest,
   parseStandaloneArguments,
-  relativeStandaloneEntry,
   resolveStandaloneBuildIdentity,
   sha256File,
   STANDALONE_USAGE,
 } from "./lib/bun-standalone-contract.mjs";
+import { createStandaloneEntrySource } from "./lib/bun-standalone-entry.mjs";
 import { rewriteStandaloneImports } from "./lib/bun-standalone-imports.mjs";
 import { createStandaloneMetadataAdapter } from "./lib/bun-standalone-metadata.mjs";
 import { createStandaloneNativeAdapter } from "./lib/bun-standalone-native.mjs";
@@ -377,35 +377,10 @@ if (process.env.OPENCLAW_STANDALONE_TRACE_PRELOAD) {
 }
 `,
 );
-const workerMap = workerEntries
-  .map(
-    (entry) =>
-      `${JSON.stringify(entry)}: () => import(${JSON.stringify(path.join(runtimeRoot, entry))})`,
-  )
-  .join(",\n");
 const bootstrap = path.join(outputRoot, "standalone-entry.mjs");
 fs.writeFileSync(
   bootstrap,
-  `import ${JSON.stringify(runtimeBootstrap)};
-import path from "node:path";
-const root = path.join(path.dirname(process.execPath), "runtime");
-const workers = {${workerMap}};
-const moduleEntries = new Set(${JSON.stringify(moduleEntries)});
-const relativeStandaloneEntry = ${relativeStandaloneEntry.toString()};
-let args = process.argv.slice(2);
-if (args[0] === "--no-install") args = args.slice(1);
-const relative = relativeStandaloneEntry(root, args[0]);
-if (relative !== undefined) {
-  const entry = args.shift();
-  const load = workers[relative] ?? (moduleEntries.has(relative) ? () => import(entry) : undefined);
-  if (!load) throw new Error("Unsupported standalone child: " + entry);
-  process.argv = [process.execPath, entry, ...args];
-  await load();
-} else {
-  process.argv[1] = path.join(root, "openclaw.mjs");
-  await import(${JSON.stringify(path.join(runtimeRoot, "openclaw.mjs"))});
-}
-`,
+  createStandaloneEntrySource({ runtimeBootstrap, runtimeRoot, workerEntries, moduleEntries }),
 );
 const audit = process.env.OPENCLAW_STANDALONE_AUDIT_MODULE
   ? await import(pathToFileURL(process.env.OPENCLAW_STANDALONE_AUDIT_MODULE).href)

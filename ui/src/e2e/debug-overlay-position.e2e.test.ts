@@ -20,11 +20,10 @@ async function settle(panel: Locator) {
   });
 }
 
-async function openCompact(page: Page, input: "mouse" | "touch" = "mouse") {
-  const activate = (control: Locator) => (input === "touch" ? control.tap() : control.click());
-  await activate(page.getByRole("button", { name: /^Open overlay/u }));
+async function openCompact(page: Page) {
+  await page.getByRole("button", { name: /^Open overlay/u }).click();
   const panel = page.getByRole("complementary", { name: "System busyness" });
-  await activate(panel.getByRole("button", { name: "Minimize system busyness" }));
+  await panel.getByRole("button", { name: "Minimize system busyness" }).click();
   await panel.locator(".debug-overlay__widget").waitFor();
   await settle(panel);
   return panel;
@@ -135,7 +134,15 @@ suite.define(() => {
       async ({ page, context }) => {
         await installMockGateway(page, { methodResponses });
         await page.goto(suite.server.baseUrl + "debug");
-        const panel = await openCompact(page, "touch");
+        await page.getByRole("button", { name: /^Open overlay/u }).tap();
+        const panel = page.getByRole("complementary", { name: "System busyness" });
+        // The read-only CPU card can cover these controls at narrow widths.
+        // Keep the real touch path reachable without dismissing it first.
+        await panel.getByRole("button", { name: "Show Gateway CPU breakdown" }).tap();
+        await panel.locator(".gateway-cpu-tooltip[open]").waitFor();
+        await panel.getByRole("button", { name: "Minimize system busyness" }).tap();
+        await panel.locator(".debug-overlay__widget").waitFor();
+        await settle(panel);
         const box = (await panel.locator("header").boundingBox())!;
         const before = (await panel.boundingBox())!;
         const cdp = await context.newCDPSession(page);

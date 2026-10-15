@@ -117,14 +117,14 @@ describe("resolveArtifactDownloadSource", () => {
     {
       page: "http://control.test",
       gateway: "ws://control.test",
-      http: false,
+      http: true,
       variant: "thumbnail",
     },
   ] as const)(
     "uses raw HTTP bytes only for $page with $gateway ($variant)",
     async ({ page, gateway, http, variant }) => {
       vi.stubGlobal("location", new URL(page));
-      const blob = new Blob(["png"], {
+      const blob = new Blob(["preview"], {
         type: variant === "thumbnail" ? "image/webp" : "image/png",
       });
       const fetchMock = vi.fn(async () => ({
@@ -150,6 +150,12 @@ describe("resolveArtifactDownloadSource", () => {
         },
         { sessionKey: "agent:main:main", artifactId: artifact.id, variant },
       );
+      if (!http && variant === "thumbnail") {
+        expect(result).toBeNull();
+        expect(request).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        return;
+      }
       expect(request).toHaveBeenCalledExactlyOnceWith(
         "artifacts.download",
         {
@@ -160,7 +166,7 @@ describe("resolveArtifactDownloadSource", () => {
         { timeoutMs: 30_000 },
       );
       if (http) {
-        const url = `/mount${ticket}${variant === "thumbnail" ? "?variant=thumbnail" : ""}`;
+        const url = `/mount${ticket}${variant === "thumbnail" ? "?variant=thumbnail&width=960" : ""}`;
         expect(result).toEqual({ url, blob });
         expect(fetchMock).toHaveBeenCalledExactlyOnceWith(url, {
           credentials: "same-origin",

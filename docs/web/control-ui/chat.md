@@ -149,6 +149,23 @@ In the macOS Web experience and Tauri desktop app on macOS, Linux, and Windows, 
 Collapsing the panel leaves only expand-sidebar beside the rail, which keeps New session and search; the content header still starts with back/forward.
 Drag an empty area of the titlebar row to move the window; its buttons keep their normal actions.
 
+## Image viewing
+
+Uploaded and managed chat images use compressed, size-bounded previews instead
+of downloading original photos for display. The browser selects an appropriate pixel density
+for signed image URLs; authenticated image requests choose a bounded rendition
+for the viewport. Offscreen images wait until they approach the viewport.
+
+Tap an image to open the zoomable viewer. The existing preview stays visible
+while a sharper, screen-sized rendition loads. If that request fails, **Retry**
+loads it again without replacing the preview or opening another tab. Swiping to
+a gallery image loads that selection, not the rest of the gallery in advance.
+**Download image** fetches the original only when selected. Copy and download
+also remain available from the image's action menu when a preview cannot load.
+Third-party image URLs retain a secondary browser link because their servers
+may allow image display but block cross-origin downloads; this is not a recovery
+action for uploaded or managed previews.
+
 ## Collaborator drafts
 
 In a shared session, another person’s in-progress message stays visible when they pause typing. Draft previews update up to four times per second, keeping the latest text when input arrives faster. After 10 seconds without typing, its label changes from **is typing...** to **Draft** without removing the bubble or shifting the transcript. Typing again updates the same bubble. Sending, clearing the draft, leaving the composer, or leaving the session removes it. An idle preview fades out and smoothly closes its space during the final 300 milliseconds before its 30-second expiry, so an abandoned tab cannot leave it visible indefinitely. Typing again cancels the exit. With reduced motion enabled, the preview stays still and disappears at the same deadline without animation. Draft previews are temporary browser state, not saved messages; changing sessions or reconnecting clears them.

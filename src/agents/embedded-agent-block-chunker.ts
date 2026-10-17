@@ -338,7 +338,11 @@ export class EmbeddedBlockChunker {
       return;
     }
 
-    if (force && source.length <= maxChars && !syntheticPrefix) {
+    const { spans: fenceSpans, state: fenceState } = scanFenceSpans(source, {
+      atLineStart: startsAtLineStart,
+    });
+    const openFence = fenceState.open ? fenceSpans.at(-1) : undefined;
+    if (force && source.length <= maxChars && !syntheticPrefix && !openFence) {
       if (source.trim().length > 0) {
         emitChunk(source, 0, this.#buffer.length, startsAtLineStart);
       }
@@ -355,20 +359,17 @@ export class EmbeddedBlockChunker {
 
     // Keep original source text so shortened language hints and synthetic
     // fences cannot move the source cursor during checkpoint reconciliation.
-    const { spans: fenceSpans, state: fenceState } = scanFenceSpans(source, {
-      atLineStart: startsAtLineStart,
-    });
-    const openFence = fenceState.open ? fenceSpans.at(-1) : undefined;
     const removedFenceInfo: Array<{ at: number; length: number }> = [];
     let removedFenceInfoLength = 0;
     for (const fence of fenceSpans) {
       fence.start -= removedFenceInfoLength;
       fence.end -= removedFenceInfoLength;
       const reopenFenceLine = resolveFenceReopenLine(fence, maxChars);
+      const closingLength = fence === openFence ? fence.indent.length + fence.marker.length + 1 : 0;
       if (
         !reopenFenceLine ||
         reopenFenceLine === fence.openLine ||
-        fence.end - fence.start <= maxChars
+        fence.end - fence.start + closingLength <= maxChars
       ) {
         continue;
       }
@@ -453,10 +454,10 @@ export class EmbeddedBlockChunker {
 
       const view = source.slice(start);
       const breakResult =
-        force && remainingLength <= maxChars
+        force && remainingLength <= maxChars && !openFence
           ? this.#pickPreferredBreakIndex(view, unsafe, chunking, false, 1, start, openFence)
           : this.#pickBreakIndex(
-              params,
+              { ...params, force },
               view,
               spans,
               chunking,
@@ -635,7 +636,7 @@ export class EmbeddedBlockChunker {
       return preferred;
     }
 
-    if (buffer.length < maxChars) {
+    if (buffer.length < maxChars && !force) {
       return { index: -1 };
     }
 
@@ -650,7 +651,7 @@ export class EmbeddedBlockChunker {
       }
     }
 
-    if (buffer.length >= maxChars) {
+    if (buffer.length >= maxChars || force) {
       const firstCodePointWidth = (buffer.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
       const forcedBreakIndex = sliceUtf16Safe(
         buffer,

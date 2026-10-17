@@ -1,8 +1,8 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, Show } from "solid-js";
+import { Show } from "solid-js";
 import { Icon } from "../../../components/solid/icon.tsx";
+import { attachmentAdmissionRef } from "./chat-attachment-admission-ref.ts";
 import "../../../styles/chat/selection-annotations.css";
-import { LitContent, solidContent } from "../../../lit/solid-content.tsx";
 
 export type AttachmentChipRemoval = {
   label: string;
@@ -18,14 +18,7 @@ export function AttachmentPreviewChip(props: {
   removal?: AttachmentChipRemoval;
   elementRef?: (element: Element | undefined) => void;
 }) {
-  let element!: HTMLSpanElement;
-  createEffect(
-    () => props.elementRef,
-    (ref) => {
-      ref?.(element);
-      return () => ref?.(undefined);
-    },
-  );
+  const ref = attachmentAdmissionRef(() => props.elementRef);
   const label = () => (
     <>
       <span aria-hidden="true">{props.icon}</span>
@@ -41,9 +34,7 @@ export function AttachmentPreviewChip(props: {
   );
   return (
     <span
-      ref={(node) => {
-        element = node;
-      }}
+      ref={ref}
       class="chat-attachment-thumb chat-attachment-thumb--file chat-selection-annotations__chip"
       role={props.removal ? undefined : "button"}
       tabindex={props.removal ? undefined : 0}
@@ -77,28 +68,4 @@ export function AttachmentPreviewChip(props: {
       </Show>
     </span>
   );
-}
-
-function LegacyAttachmentChip(props: {
-  label: string;
-  icon: unknown;
-  onClick?: () => void;
-  onReveal?: () => void;
-  removal?: AttachmentChipRemoval;
-  elementRef?: (element: Element | undefined) => void;
-}) {
-  return (
-    <AttachmentPreviewChip
-      label={props.label}
-      icon={<LitContent value={props.icon} />}
-      onClick={props.onClick}
-      onReveal={props.onReveal}
-      removal={props.removal}
-      elementRef={props.elementRef}
-    />
-  );
-}
-
-export function renderAttachmentChip(options: Parameters<typeof LegacyAttachmentChip>[0]) {
-  return solidContent(LegacyAttachmentChip, options);
 }

@@ -467,6 +467,14 @@ export function createGitHubPublicationCoordinatorMethods(params: {
       return row ? { result: publicationResult(row), confirmation: null } : undefined;
     },
 
+    async latestPublishedShared(
+      session: PublicationSessionIdentity,
+      preparedRead: Parameters<typeof readSharedGitHubPublication>[2],
+    ): Promise<SessionGitHubStatusResult | null> {
+      const row = await readSharedGitHubPublication(session, { status: "published" }, preparedRead);
+      return row ? { result: publicationResult(row), confirmation: null } : null;
+    },
+
     async latestShared(
       session: PublicationSessionIdentity,
       idempotencyKey?: string,
@@ -476,8 +484,9 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           "repository" | "branch" | "source_head_commit" | "workspace_tree"
         >,
       ) => Promise<boolean>,
+      preparedRead?: Parameters<typeof readSharedGitHubPublication>[2],
     ): Promise<SessionGitHubStatusResult | null> {
-      const row = await readSharedGitHubPublication(session, { idempotencyKey });
+      const row = await readSharedGitHubPublication(session, { idempotencyKey }, preparedRead);
       // Discovery offers recovery for current work, not a failure whose accepted
       // snapshot has since been published. Exact-key and by-id history stay intact.
       if (

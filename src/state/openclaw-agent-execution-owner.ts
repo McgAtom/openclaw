@@ -267,7 +267,7 @@ export function createAgentDatabaseExecution(
       );
       // A peer's intentional native close can finish while this admitted operation settles.
       if (generation === current && !nativeClosing && current.failure()) {
-        await owner.close().catch(reportCleanupFailure);
+        await closeNative(current).catch(reportCleanupFailure);
       }
       return result;
     } catch (error) {
@@ -277,6 +277,7 @@ export function createAgentDatabaseExecution(
         !entered &&
         !schemaReadmitted &&
         nativeFailure !== "native" &&
+        nativeFailure !== "lost" &&
         error instanceof AgentDatabaseSchemaAdmissionChangedError;
       if (generation === current && (nativeFailure || retireNativeOnFailure || schemaChanged)) {
         try {
@@ -284,7 +285,8 @@ export function createAgentDatabaseExecution(
             reportTerminal(error);
             await owner.close();
           } else {
-            // The rejected broker scope has settled; only its captured native owner is retired.
+            // A lost carrier invalidates native claims, not other chats' logical borrowers.
+            // The failed operation stays failed; only later work can open a fresh generation.
             await closeNative(current);
           }
         } catch (cleanupError) {
@@ -357,6 +359,9 @@ export function createAgentDatabaseExecution(
     },
     get creationIdentity() {
       return creationIdentity;
+    },
+    getPendingPreparation() {
+      return generation?.getPendingPreparation();
     },
     borrow(borrowedPath, expected, creating, requestedPath) {
       const cleanup = getAgentDeletionDatabaseCleanup({ ...executionOptions, path: borrowedPath });

@@ -23,17 +23,23 @@ export const MAX_CACHED_CHAT_WEIGHT = 24 * 1024 * 1024;
 const cachedMessageWeights = new WeakMap<object, number>();
 const appendedEventClaims = new WeakMap<ChatMessageCache, WeakSet<object>>();
 
+export const CHAT_TRANSCRIPT_METADATA_KEYS = [
+  "key",
+  "kind",
+  "label",
+  "displayName",
+  "derivedTitle",
+  "classification",
+  "participants",
+  "expandedParticipants",
+  "owner",
+  "lastRunId",
+  "status",
+  "runtimeMs",
+] as const;
 export type ChatTranscriptMetadata = Pick<
   GatewaySessionRow,
-  | "key"
-  | "kind"
-  | "classification"
-  | "participants"
-  | "expandedParticipants"
-  | "owner"
-  | "lastRunId"
-  | "status"
-  | "runtimeMs"
+  (typeof CHAT_TRANSCRIPT_METADATA_KEYS)[number]
 >;
 
 const transcriptMetadata = new WeakMap<GatewaySessionRow, ChatTranscriptMetadata>();
@@ -46,6 +52,9 @@ export function projectChatTranscriptMetadata(row: GatewaySessionRow): ChatTrans
   const {
     key,
     kind,
+    label,
+    displayName,
+    derivedTitle,
     classification,
     participants,
     expandedParticipants,
@@ -57,6 +66,9 @@ export function projectChatTranscriptMetadata(row: GatewaySessionRow): ChatTrans
   const metadata = {
     key,
     kind,
+    label,
+    displayName,
+    derivedTitle,
     classification,
     participants,
     expandedParticipants,

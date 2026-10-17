@@ -2,11 +2,14 @@
 import { createComponent } from "solid-js";
 import { expect, it, vi } from "vitest";
 import { fnv1aUtf16 } from "../../../lib/fnv1a.ts";
+import type { SolidBridgeElement } from "../../../lib/solid-bridge.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import { ChatDetailsSession } from "./chat-details-session.tsx";
 import type { ChatDetailsProps } from "./chat-details-types.ts";
-import type { ChatSubagentActivityLive } from "./chat-subagent-activity-live.ts";
+import type { SubagentActivityProps } from "./chat-subagent-activity.tsx";
+
+type ChatSubagentActivityLive = SolidBridgeElement<SubagentActivityProps>;
 
 async function mount(overrides: Partial<ChatDetailsProps> = {}) {
   const value: ChatDetailsProps = {
@@ -54,6 +57,21 @@ it("omits empty linked-work disclosures and opens arriving pull requests", async
   await element.updateComplete;
   expect(element.querySelector("[data-details-group]")).toBeNull();
   expect(element.querySelector(".chat-details-session > summary")).toBeNull();
+  const openChanges = vi.fn();
+  element.props = { ...element.props!, onOpenSessionDiff: openChanges };
+  await element.updateComplete;
+  const changes = element.querySelector('[data-details-group="pull-requests"]')!;
+  expect(changes.querySelector("summary")?.textContent).toContain("Changes");
+  const allChanges = changes.parentElement!.querySelector<HTMLButtonElement>(
+    ".chat-details__all-changes",
+  )!;
+  expect(allChanges.closest("summary")).toBeNull();
+  expect(allChanges.textContent).toContain("All changes");
+  allChanges.click();
+  expect(openChanges).toHaveBeenCalledOnce();
+  element.props = { ...element.props!, onOpenSessionDiff: undefined };
+  await element.updateComplete;
+  expect(element.querySelector("[data-details-group]")).toBeNull();
   element.props = { ...element.props!, pullRequests };
   await element.updateComplete;
   expect(
@@ -87,8 +105,28 @@ it("keeps immutable creator, mutable owner and participants distinct without cla
     false,
   );
 });
+it("shows participant controls only while the session has participants", async () => {
+  const element = await mount();
+  expect(element.querySelector(".chat-details__meta-actions")).toBeNull();
+  element.props = {
+    ...element.props!,
+    selectedSession: {
+      ...element.props!.selectedSession!,
+      participants: [{ identity: { type: "profile", id: "participant" }, label: "Contributor" }],
+    },
+  };
+  await element.updateComplete;
+  expect(element.querySelector(".chat-details__participants")?.textContent).toContain(
+    "1 participants",
+  );
+  element.props = {
+    ...element.props!,
+    selectedSession: { ...element.props!.selectedSession!, participantCount: 0 },
+  };
+  await element.updateComplete;
+  expect(element.querySelector(".chat-details__meta-actions")).toBeNull();
+});
 it("uses the current PR renderer and preserves CI session identity and branch dismissal", async () => {
-  const dismiss = vi.fn();
   const element = await mount({
     pullRequestsSessionId: "incarnation-7",
     pullRequests: [
@@ -104,9 +142,8 @@ it("uses the current PR renderer and preserves CI session identity and branch di
         deletions: 41,
       },
     ],
-    onDismissPullRequest: dismiss,
   });
-  expect(element.querySelector(".chat-pr__repo")?.textContent).toBe("A compact PR title");
+  expect(element.querySelector(".chat-pr__title")?.textContent).toBe("A compact PR title");
   const link = element.querySelector(".chat-pr__link")!;
   for (const fact of ["example/project", "feature", "Open", "+84", "−41"]) {
     expect(link.getAttribute("title")).toContain(fact);
@@ -115,8 +152,6 @@ it("uses the current PR renderer and preserves CI session identity and branch di
   const automation = element.querySelector("openclaw-chat-ci-automation");
   expect(automation).toHaveProperty("sessionId", "incarnation-7");
   expect(automation).toHaveProperty("presented", true);
-  element.querySelector<HTMLButtonElement>(".chat-pr__dismiss")!.click();
-  expect(dismiss).toHaveBeenCalledWith(element.props!.pullRequests![0]);
   const branch = {
     owner: "example",
     repo: "project",

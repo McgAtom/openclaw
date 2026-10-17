@@ -290,6 +290,7 @@ async function activateCandidate(
     effects: { credentialsSaved: false },
     beforePersistentEffect: async () => {
       throwIfSetupInferenceCancelled(params);
+      params.onActivationStarted?.();
       await params.beforePersistentEffect?.();
       throwIfSetupInferenceCancelled(params);
     },
@@ -506,6 +507,7 @@ async function verifyAndActivateCandidate(
     }
     throwIfSetupInferenceCancelled(params);
   }
+  params.onActivationStarted?.();
   const revalidateOwner = async (candidateRoute: SystemAgentConfiguredRoute) => {
     if ("binding" in verification) {
       let current: SetupHarnessVerification | undefined;
@@ -515,6 +517,7 @@ async function verifyAndActivateCandidate(
             route: candidateRoute,
             deps,
             cache,
+            generation,
             signal: params.signal,
             assertCurrent: () => throwIfSetupInferenceCancelled(params),
           }),
@@ -604,10 +607,8 @@ async function verifyAndActivateCandidate(
         write: configTarget.write,
       }),
       write: async (_candidate, { writeOptions, captureUndo }) => {
-        const transform =
-          deps.transformConfigWithPendingPluginInstalls ??
-          (await import("../plugins/install-record-commit.js"))
-            .transformConfigWithPendingPluginInstalls;
+        const { transformConfigWithPendingPluginInstalls: transform } =
+          await import("../plugins/install-record-commit.js");
         const committed = await transform({
           base: "source",
           writeOptions,

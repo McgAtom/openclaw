@@ -9,11 +9,6 @@ import {
   resetPublishedConfigRuntimeEnv,
   type PreparedConfigRuntimeEnv,
 } from "./config-env-vars.js";
-import { getScopedConfigSnapshotPreparation } from "./io.snapshot-preparation-scope.js";
-import type {
-  CapturedConfigSnapshotPreparation,
-  ConfigSnapshotPreparation,
-} from "./io.snapshot-preparation.types.js";
 import {
   cloneConfigWithResolutionFacts,
   copyConfigResolutionFacts,
@@ -27,10 +22,14 @@ import {
 } from "./runtime-config-capture-state.js";
 import { runtimeConfigPublication } from "./runtime-config-publication.js";
 import { configSnapshotsMatch, stableConfigStringify } from "./runtime-config-snapshot-match.js";
-import { runtimeSessionChangeScope } from "./runtime-session-changes.js";
+import { runtimeSessionPublicationChangeScope } from "./runtime-session-changes.js";
 import {
   hashRuntimeConfigValue,
+  hashRuntimeConfigPreparation,
+  hashModelConfig,
+  matchesRuntimeConfigPublicationFact,
   matchesRuntimeConfigValueFact,
+  matchesRuntimeSourceConfigValueFact,
   prepareRuntimeConfigValueFact,
   type RuntimeConfigValueFact,
 } from "./runtime-snapshot-value-fact.js";
@@ -148,7 +147,6 @@ const managedRuntimeConfigWriteOwners = new Map<
   Set<{
     id: symbol;
     preflight?: ManagedRuntimeConfigWritePreflight;
-    prepareSnapshot?: ConfigSnapshotPreparation;
   }>
 >();
 const runtimeConfigWriteListeners = new Set<(event: RuntimeConfigWriteNotification) => void>();
@@ -194,18 +192,31 @@ function publishRuntimeConfigSnapshot(
   const previousEditedInPlace =
     runtimeConfigSnapshot !== null &&
     runtimeConfigValueFact !== null &&
-    (!matchesRuntimeConfigValueFact(runtimeConfigSnapshot, runtimeConfigValueFact) ||
-      !isDeepStrictEqual(
-        serializeConfigResolutionFacts(runtimeConfigSnapshot),
-        runtimeConfigValueFact.facts,
-      ));
+    !matchesRuntimeConfigPublicationFact(runtimeConfigSnapshot, runtimeConfigValueFact);
+  const previousSourceEditedInPlace =
+    runtimeConfigSourceSnapshot !== null &&
+    runtimeSourceConfigValueFact !== null &&
+    !matchesRuntimeSourceConfigValueFact(runtimeConfigSourceSnapshot, runtimeSourceConfigValueFact);
+  // Authored policy can change while resolved runtime values stay identical. Only the
+  // write-version stamp is irrelevant to that policy; compare against captured source bytes.
+  const sourceMatchesPublished =
+    sourceConfig === undefined
+      ? runtimeConfigSourceSnapshot === null
+      : runtimeConfigSourceSnapshot !== null &&
+        runtimeSourceConfigValueFact !== null &&
+        matchesRuntimeSourceConfigValueFact(sourceConfig, runtimeSourceConfigValueFact);
   // Compare with what the previous publication recorded, since its object may have been edited
   // in place; withhold only a distinct object matching that record, or a proven no-op.
   const matchesPublished =
     runtimeConfigSnapshot !== config &&
     runtimeConfigSnapshotMetadata?.fingerprint === configFact.fingerprint &&
     isDeepStrictEqual(runtimeConfigValueFact?.facts, facts);
-  if (!previousEditedInPlace && (valuesUnchanged || matchesPublished)) {
+  if (
+    !previousEditedInPlace &&
+    !previousSourceEditedInPlace &&
+    sourceMatchesPublished &&
+    (valuesUnchanged || matchesPublished)
+  ) {
     return;
   }
   const sourceFact =
@@ -218,9 +229,15 @@ function publishRuntimeConfigSnapshot(
     sourceFingerprint: sourceConfig ? sourceFact.fingerprint : null,
     updatedAtMs: Date.now(),
   };
-  const scope = previousEditedInPlace
-    ? "config"
-    : runtimeSessionChangeScope(runtimeConfigSnapshot, config);
+  const scope = runtimeSessionPublicationChangeScope({
+    previousRuntimeConfig: runtimeConfigSnapshot,
+    runtimeConfig: config,
+    previousSourceConfig: runtimeConfigSourceSnapshot,
+    sourceConfig,
+    runtimeUnchanged: valuesUnchanged || matchesPublished,
+    sourceUnchanged: sourceMatchesPublished,
+    previousEditedInPlace: previousEditedInPlace || previousSourceEditedInPlace,
+  });
   prepareRuntimePluginsConfig(config);
   runtimeConfigSnapshotGeneration += 1;
   clearExecutablePathCache();
@@ -261,12 +278,6 @@ export function registerRuntimeConfigSnapshotPreparer(
   };
 }
 
-function preparationFingerprint(config: OpenClawConfig): string {
-  return sha256Base64Url(
-    stableConfigStringify({ config, facts: serializeConfigResolutionFacts(config) }),
-  );
-}
-
 /** Prepare off the publication path; a superseded candidate must be discarded by its owner. */
 async function prepareRuntimeConfigSnapshot(
   inputConfig: OpenClawConfig,
@@ -281,7 +292,7 @@ async function prepareRuntimeConfigSnapshot(
   copyConfigResolutionFacts(factSource, config);
   const generation = runtimeConfigSnapshotGeneration;
   const preparerGeneration = runtimeConfigPreparerGeneration;
-  const fingerprint = preparationFingerprint(config);
+  const fingerprint = hashRuntimeConfigPreparation(config);
   const envFingerprint = context.env ? sha256Base64Url(stableConfigStringify(context.env)) : null;
   const prepared = await Promise.allSettled(
     [...runtimeConfigSnapshotPreparers].map(async ([prepare, options]) =>
@@ -300,7 +311,7 @@ async function prepareRuntimeConfigSnapshot(
     return (
       runtimeConfigSnapshotGeneration === generation &&
       runtimeConfigPreparerGeneration === preparerGeneration &&
-      preparationFingerprint(config) === fingerprint &&
+      hashRuntimeConfigPreparation(config) === fingerprint &&
       (context.env ? sha256Base64Url(stableConfigStringify(context.env)) : null) === envFingerprint
     );
   };
@@ -427,17 +438,6 @@ export function resolveRuntimeConfigCacheKey(config: OpenClawConfig): string {
   return `config:${hashRuntimeConfigValue(config)}`;
 }
 
-function hashModelConfig(config: OpenClawConfig, sourceConfig: OpenClawConfig): string {
-  const project = (value: OpenClawConfig) => {
-    const { ui: _ui, meta, ...rest } = value;
-    const { lastTouchedVersion: _lastTouchedVersion, ...modelMeta } = meta ?? {};
-    return { config: { ...rest, meta: modelMeta }, facts: serializeConfigResolutionFacts(value) };
-  };
-  return sha256Base64Url(
-    stableConfigStringify({ runtime: project(config), source: project(sourceConfig) }),
-  );
-}
-
 /** Model projections ignore display settings, but retain authored values and resolution provenance. */
 export function resolveRuntimeModelConfigCacheKey(config: OpenClawConfig): string {
   if (config === runtimeConfigSnapshot && runtimeModelConfigCacheKey !== null) {
@@ -500,9 +500,8 @@ export function registerRuntimeConfigWriteListener(
 export function registerManagedRuntimeConfigWriteOwner(
   configPath: string,
   preflight?: ManagedRuntimeConfigWritePreflight,
-  prepareSnapshot?: ConfigSnapshotPreparation,
 ): (() => void) & { ownerId: symbol } {
-  const owner = { id: Symbol("managed-runtime-config-write-owner"), preflight, prepareSnapshot };
+  const owner = { id: Symbol("managed-runtime-config-write-owner"), preflight };
   const owners = managedRuntimeConfigWriteOwners.get(configPath) ?? new Set();
   owners.add(owner);
   managedRuntimeConfigWriteOwners.set(configPath, owners);
@@ -514,39 +513,6 @@ export function registerManagedRuntimeConfigWriteOwner(
     }
   };
   return Object.assign(unregister, { ownerId: owner.id });
-}
-
-/** A read retains one exact host owner; release cannot redirect it to a replacement. */
-export function captureManagedConfigSnapshotPreparation(
-  configPath: string,
-): CapturedConfigSnapshotPreparation | null {
-  const scoped = getScopedConfigSnapshotPreparation(configPath);
-  const owner = [...(managedRuntimeConfigWriteOwners.get(configPath) ?? [])].find(
-    (candidate) => candidate.prepareSnapshot,
-  );
-  const prepare = scoped?.prepare ?? owner?.prepareSnapshot;
-  if (!prepare) {
-    return null;
-  }
-  const isCurrent =
-    scoped?.isCurrent ??
-    (() => Boolean(owner && managedRuntimeConfigWriteOwners.get(configPath)?.has(owner)));
-  const assertCurrent = () => {
-    if (!isCurrent()) {
-      throw new Error("Gateway config snapshot preparation owner has closed");
-    }
-  };
-  const run = async <T>(
-    operation: (prepare: ConfigSnapshotPreparation) => Promise<T>,
-  ): Promise<T> => {
-    assertCurrent();
-    try {
-      return await operation(prepare);
-    } finally {
-      assertCurrent();
-    }
-  };
-  return Object.assign(run, { assertCurrent });
 }
 
 export async function preflightManagedRuntimeConfigWrite(

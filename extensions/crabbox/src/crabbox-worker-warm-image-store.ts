@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { OpenClawPluginApi, WorkerProvider } from "openclaw/plugin-sdk/plugin-entry";
 import type {
   PluginStateCompareIntent,
@@ -119,7 +120,7 @@ export async function assertCrabboxWarmImageMigrationReady(state: CrabboxState):
   }
 }
 
-function requireCanonicalProfile(record: WarmProfileRecord | undefined) {
+export function admitCrabboxWarmImageProfile(record: WarmProfileRecord | undefined) {
   if (record && record.version !== 3) {
     throw new Error(
       "Crabbox warm-image state requires migration; run openclaw doctor --fix before provisioning workers.",
@@ -251,6 +252,52 @@ export const isCrabboxWarmImageHeld = (
       imageGeneration?.checkpointId === checkpointId,
   );
 
+export function assertCrabboxWarmImagePreparation(
+  preparation:
+    | { key: string; cacheKey: string; purpose: "session" | "reserve"; demandAtMs: number }
+    | undefined,
+  allocation: { projectKey?: string; target: CrabboxOperatingSystem },
+): void {
+  if (
+    preparation &&
+    (!allocation.projectKey ||
+      allocation.target !== "linux" ||
+      !/^[a-f0-9]{64}$/u.test(preparation.key) ||
+      !/^[a-f0-9]{64}$/u.test(preparation.cacheKey) ||
+      (preparation.purpose !== "session" && preparation.purpose !== "reserve") ||
+      !Number.isSafeInteger(preparation.demandAtMs) ||
+      preparation.demandAtMs < 0)
+  ) {
+    throw new Error("Crabbox project preparation identity is invalid.");
+  }
+}
+
+/** A provision retry keeps the profile, project, and runtime identity its lease first recorded. */
+export function assertCrabboxWarmImageReplay(
+  replay: WarmAllocationRecord & { key: string },
+  request: Pick<
+    WarmAllocationRecord,
+    "machineClass" | "preparationKey" | "cacheKey" | "purpose" | "runtimeIdentity"
+  > & { key: string; os: CrabboxOperatingSystem; demandAtMs?: number },
+): void {
+  if (
+    replay.key !== request.key ||
+    replay.machineClass !== request.machineClass ||
+    (replay.os ?? "linux") !== request.os ||
+    replay.preparationKey !== request.preparationKey ||
+    replay.cacheKey !== request.cacheKey ||
+    replay.purpose !== request.purpose ||
+    (request.demandAtMs !== undefined && replay.demandAtMs !== request.demandAtMs)
+  ) {
+    throw new Error("Crabbox provision retry changed its recorded profile or project identity.");
+  }
+  if (!isDeepStrictEqual(replay.runtimeIdentity, request.runtimeIdentity)) {
+    throw new Error(
+      "Crabbox provision retry changed or lacks its recorded node runtime identity; stop the worker before reprovisioning",
+    );
+  }
+}
+
 type WarmProfileDisplayFacts = Pick<
   WarmProfileRecord,
   "profileId" | "backend" | "machineClass" | "os" | "projectLabel" | "projectRoot"
@@ -312,16 +359,16 @@ export function openCrabboxWarmImageStore(state: CrabboxState, env?: NodeJS.Proc
     deleteIf(key: string, predicate: (current: WarmProfileRecord) => boolean) {
       return compareProfile(store, key, (current) => ({
         operation: "delete",
-        action: current && predicate(requireCanonicalProfile(current)!) ? "delete" : "keep",
+        action: current && predicate(admitCrabboxWarmImageProfile(current)!) ? "delete" : "keep",
       }));
     },
     async lookup(key: string) {
-      return requireCanonicalProfile(await store.lookup(key));
+      return admitCrabboxWarmImageProfile(await store.lookup(key));
     },
     async entries() {
       const entries = await store.entries();
       for (const entry of entries) {
-        entry.value = requireCanonicalProfile(entry.value)!;
+        entry.value = admitCrabboxWarmImageProfile(entry.value)!;
       }
       return entries;
     },
@@ -330,7 +377,7 @@ export function openCrabboxWarmImageStore(state: CrabboxState, env?: NodeJS.Proc
       update: (current: WarmProfileRecord | undefined) => WarmProfileRecord | undefined,
     ) {
       return compareProfile(store, key, (current) => {
-        const value = update(requireCanonicalProfile(current));
+        const value = update(admitCrabboxWarmImageProfile(current));
         return value === undefined
           ? { operation: "update", action: "keep" }
           : { operation: "update", action: "set", value };
@@ -608,8 +655,7 @@ export async function listCrabboxWarmImages(state: CrabboxState, env?: NodeJS.Pr
   );
 }
 
-export function projectCrabboxWarmImage(key: string, record: WarmProfileRecord) {
-  const value = requireCanonicalProfile(record)!;
+export function projectCrabboxWarmImage(key: string, value: WarmProfileRecord) {
   return {
     profileKey: key,
     profileId: value.profileId,

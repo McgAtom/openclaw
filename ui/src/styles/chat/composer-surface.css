@@ -1010,7 +1010,6 @@
      it must not collapse the normal bottom breathing room. */
   .agent-chat__composer-shell {
     grid-template-columns: minmax(0, 1fr);
-    gap: 0;
   }
 }
 
@@ -1043,17 +1042,6 @@
     max-height: 56px;
     overflow-y: auto;
   }
-}
-
-.agent-chat__input [data-chat-pointer-restored-focus]:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.agent-chat__input
-  wa-dropdown[data-chat-pointer-opened-picker]
-  wa-dropdown-item:is(:focus, :focus-visible) {
-  outline: none;
 }
 
 .chat-thread-inner {

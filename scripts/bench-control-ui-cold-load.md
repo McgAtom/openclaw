@@ -42,6 +42,28 @@ Online measurements.
 keep its build identity equal to the checkout head. This preserves a baseline
 bundle while production sources are edited.
 
+`--warm-reload --probe-dir /path/to/probes` explicitly flushes the selected transcript
+through its cache owner before each reload and verifies that session's persisted
+snapshot. The probe directory supplies `loaf-mutation.init.js` and
+`ws-rpc-census.init.js`. The output records cache reads, cached transcript visibility,
+hello, live catch-up, enabled input, layout shifts, mutation batches, and retained
+row elements. Visibility and enabled-input milestones are DOM observations;
+FCP is the browser's paint metric. Diagnostic runs also save filmstrip frames.
+Use `--untraced` for timing comparisons without boot tracing or CPU sampling,
+then collect separate traced runs for the storyboard and attribution.
+
+`--large-snapshot` expands the transcript to 1,100 synthetic messages (about 3 MB),
+including tool results and replay metadata. Combine it with `--warm-reload` to
+measure a large native IndexedDB restore. `snapshotSave` reports the persisted
+row count and UTF-8 bytes, synchronous serialization time, and total flush time
+for a save through the live cache owner before each reload.
+
+The dashboard fixture includes reaction pickers, widget actions, context usage,
+and viewers. Use `--warm-reload` to measure its cached restore. Transaction labels
+in diagnostic traces distinguish transcript, sidebar, and composer cache
+completions; a completion callback can include later render microtasks and is
+not a measurement of native IndexedDB cost alone.
+
 `--live-events` adds 125 synthetic live frames over 20 seconds after each reload
 settles. The stream mixes full presence snapshots, session patches for displayed,
 held-but-hidden, and outside-window rows, open-session messages and assistant

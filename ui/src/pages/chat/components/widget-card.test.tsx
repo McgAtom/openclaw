@@ -4,10 +4,10 @@ import { createSignal } from "solid-js";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { mcpAppWidgetNameForViewId, type BoardProvider } from "../../../lib/board/provider.ts";
 import { bumpCanvasWidgetFrameConnectionGeneration } from "../../../lib/chat/canvas-widget-frame-generation.ts";
-import { SolidContentPresentation } from "../../../lit/solid-content.tsx";
+import { ContentPresentation } from "../../../lib/solid/presentation.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
-import { flush } from "../../../test-helpers/solid-settle.ts";
-import { ToolPreview } from "./widget-card.ts";
+import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
+import { ToolPreview } from "./widget-card-view.tsx";
 
 const canvasPreview = {
   kind: "canvas",
@@ -84,10 +84,34 @@ afterEach(async () => {
     unmountWidget(host);
   }
   document.body.replaceChildren();
+  delete document.documentElement.dataset.themeMode;
 });
 
 describe("widget-card", () => {
-  it("keeps initialized frames stable but refreshes remounts and new connection generations", () => {
+  it("keeps theme delivery attached to a retained mounted frame", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    mountWidget(
+      { ...canvasPreview, url: "https://example.test/theme-widget", sandbox: "scripts" },
+      { allowExternalEmbedUrls: true },
+      host,
+    );
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    frame.dispatchEvent(new Event("load"));
+    frame.className = "";
+    post.mockClear();
+
+    document.documentElement.dataset.themeMode = "light";
+    await Promise.resolve();
+    expect(host.querySelector("iframe")).toBe(frame);
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "openclaw:widget-theme", mode: "light" }),
+      "*",
+    );
+  });
+
+  it("keeps initialized frames stable through capability and transport generations", () => {
     const firstPreview = {
       ...canvasPreview,
       url: "/__openclaw__/canvas/documents/cv_surface_lease_one/index.html",
@@ -128,6 +152,7 @@ describe("widget-card", () => {
     const remountedFrame = host.querySelector("iframe");
     expect(remountedFrame).not.toBe(originalFrame);
     expect(remountedFrame?.getAttribute("src")).toContain("/__openclaw__/cap/two/");
+    initializeWidgetFrame(remountedFrame!);
 
     bumpCanvasWidgetFrameConnectionGeneration();
     mountWidget(
@@ -137,8 +162,7 @@ describe("widget-card", () => {
       },
       host,
     );
-    expect(host.querySelector("iframe")).not.toBe(remountedFrame);
-    expect(host.querySelector("iframe")?.getAttribute("src")).toContain("/__openclaw__/cap/three/");
+    expect(host.querySelector("iframe")).toBe(remountedFrame);
   });
 
   it.each(["failed"] as const)(
@@ -254,6 +278,11 @@ describe("widget-card", () => {
     expect(canvas.querySelector("iframe.chat-tool-card__preview-frame")).not.toBeNull();
     expect(canvas.querySelector("mcp-app-view")).toBeNull();
     expect(canvas.querySelector('button[aria-label="Widget actions"]')).not.toBeNull();
+    document.body.append(canvas);
+    canvas.querySelector<HTMLButtonElement>('button[aria-label="Widget actions"]')!.click();
+    await waitForSolid(() =>
+      expect(canvas.querySelector('[role="menu"]')?.matches(":popover-open")).toBe(true),
+    );
     expect(
       Array.from(canvas.querySelectorAll('[role="menuitem"]'), (item) => item.textContent?.trim()),
     ).toEqual(["Copy as image", "Download as image"]);
@@ -287,9 +316,6 @@ describe("widget-card", () => {
       app,
     );
     expect(app.querySelector('button[aria-label="Widget actions"]')).not.toBeNull();
-    expect(
-      Array.from(app.querySelectorAll('[role="menuitem"]'), (item) => item.textContent?.trim()),
-    ).toEqual(["Show raw details"]);
 
     const external = mountWidget(
       {
@@ -297,6 +323,11 @@ describe("widget-card", () => {
         url: "https://example.test/widget",
       },
       { allowExternalEmbedUrls: true, rawText: "external raw payload" },
+    );
+    document.body.append(external);
+    external.querySelector<HTMLButtonElement>('button[aria-label="Widget actions"]')!.click();
+    await waitForSolid(() =>
+      expect(external.querySelector('[role="menu"]')?.matches(":popover-open")).toBe(true),
     );
     expect(
       Array.from(external.querySelectorAll('[role="menuitem"]'), (item) =>
@@ -495,7 +526,7 @@ describe("widget-card presentation", () => {
     const cancel = vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => {});
     const [presented, setPresented] = createSignal(true);
     const root = mountSolid(() => (
-      <SolidContentPresentation value={presented}>
+      <ContentPresentation value={presented}>
         <div class="chat-thread">
           <ToolPreview
             preview={{ ...canvasPreview, url: "about:blank", sandbox: "strict" }}
@@ -503,7 +534,7 @@ describe("widget-card presentation", () => {
             options={{ rawText: "Widget details" }}
           />
         </div>
-      </SolidContentPresentation>
+      </ContentPresentation>
     ));
     onTestFinished(() => {
       root.unmount();

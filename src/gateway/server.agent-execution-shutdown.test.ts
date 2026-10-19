@@ -5,6 +5,7 @@ import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { deleteSubagentSessionForCleanup } from "../agents/subagents/registry/subagent-session-cleanup.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { callGateway } from "./call.js";
 import { registerChatAbortController } from "./chat-abort.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
@@ -98,7 +99,12 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
       };
       const cleanupOutcomes: string[] = [];
       const foreign = registerChatAbortController({
-        chatAbortControllers: new Map(),
+        target: captureSessionTarget({
+          storeScope: "foreign-store",
+          sessionKey: "agent:foreign:main",
+          incarnation: "foreign-session",
+          agentId: "foreign",
+        }),
         runId,
         sessionId: "foreign-session",
         sessionKey: "agent:foreign:main",
@@ -193,7 +199,13 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
           if (abortSignal.aborted) {
             throw abortSignal.reason;
           }
-          return { payloads: [{ text: "completed during grace" }], meta: { durationMs: 1 } };
+          return {
+            payloads: [{ text: "completed during grace" }],
+            meta: {
+              durationMs: 1,
+              terminalReply: { disposition: "visible", text: "completed during grace" },
+            },
+          };
         } finally {
           abortSignal.removeEventListener("abort", onAbort);
         }

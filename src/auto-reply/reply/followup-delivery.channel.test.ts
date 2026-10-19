@@ -14,7 +14,7 @@ import type { ReplyPayload } from "../types.js";
 import { setBlockReplyDelivery } from "./block-reply-delivery.js";
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery-payloads.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
-import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 
 const { a2aChannelPlugin } = await loadBundledPluginFacade<{ a2aChannelPlugin: ChannelPlugin }>({
   pluginId: "a2a",
@@ -26,9 +26,9 @@ const channelState = vi.hoisted(() => ({
   deliver: vi.fn(),
 }));
 
+// mock-isolation: channel custody tests provide the follow-up route without loading model or auth plans.
 vi.mock("../../agents/runtime-plan/build.js", () => ({
   buildAgentRuntimeDeliveryPlan: () => ({
-    isSilentPayload: () => false,
     resolveFollowupRoute: () => undefined,
   }),
 }));
@@ -95,7 +95,6 @@ function createTurn(params: {
       key: "main",
       current: () => undefined,
       publish: () => undefined,
-      adopt: () => undefined,
     },
     sendPolicy: "allow",
     preflightCompactionApplied: false,
@@ -302,12 +301,20 @@ describe("follow-up delivery channel boundary", () => {
 
   it.each([
     {
-      name: "optional group generic silence",
+      name: "optional group control-looking failure",
+      expectation: "optional",
+      channel: "discord",
+      recipient: "channel:C1",
+      text: "NO_REPLY.",
+      delivered: true,
+    },
+    {
+      name: "optional group literal control-looking failure",
       expectation: "optional",
       channel: "discord",
       recipient: "channel:C1",
       text: "NO_REPLY",
-      delivered: false,
+      delivered: true,
     },
     {
       name: "optional work without a recipient",

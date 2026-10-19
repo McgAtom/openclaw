@@ -8,6 +8,7 @@ import type {
   SessionTranscriptTurnMutation,
   SessionTranscriptTurnMutationResult,
 } from "../config/sessions/goals-operations.types.js";
+import type { SessionInputLifecycleAdmission } from "../config/sessions/restart-resume.js";
 import type { SessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type {
   SessionTranscriptTurnExpectedState,
@@ -214,14 +215,15 @@ export type UserTurnTranscriptRecorder = {
   /** Durable input custody leaves the active transcript unchanged until execution owns it. */
   stageApproved?: (options: {
     runId: string;
-    lifecycleAdmission?: import("../config/sessions/restart-resume.js").SessionInputLifecycleAdmission;
+    storageTarget?: UserTurnPersistenceOptions["storageTarget"];
+    lifecycleAdmission?: SessionInputLifecycleAdmission;
     assertCurrent: () => void;
     assertAdmittedCurrent?: () => void;
     assertCompletionCurrent?: () => void;
     authority?: import("../config/sessions/session-pending-input-authority.js").SessionPendingInputAuthority;
   }) => Promise<boolean>;
   getProcessingCompletion?: () => AgentRunTerminalOutcome | undefined;
-  /** @deprecated Await completeProcessingAsync. Final compatibility day: 2026-12-31. */
+  /** @deprecated Await completeProcessingAsync. Final compatibility day: 2026-12-31. Removal in the first January 2027 stable release. */
   completeProcessing?: (outcome: AgentRunTerminalOutcome) => AgentRunTerminalOutcome | undefined;
   completeProcessingAsync?: (
     outcome: AgentRunTerminalOutcome,

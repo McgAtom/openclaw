@@ -1,9 +1,13 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
+import {
+  createAdmittedRunOperatorAuthority,
+  prepareSystemAgentRunAdmission,
+} from "../../agents/admitted-run-context.js";
 import { createHarnessCompletionSourceAssertion } from "../../agents/agent-harness-completion-recovery.js";
 import { claimAgentSessionWriter } from "../../agents/embedded-agent-runner/run/session-bootstrap.js";
+import { renderStorageFailureSummary } from "../../agents/failover/assistant-request-failure-copy.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -18,6 +22,7 @@ import {
   onInternalDiagnosticEvent,
   waitForDiagnosticEventsDrained,
 } from "../../infra/diagnostic-events.js";
+import { classifyGatewayStorageFailure } from "../../infra/sqlite-error-diagnostics.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -148,6 +153,80 @@ it.each(["new input", "accepted input"] as const)(
     }),
 );
 
+it("keeps an authenticated peer follow-up internal while retaining its operator source", () =>
+  withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    setRuntimeConfigSnapshot({});
+    const scope = {
+      agentId: "main",
+      storePath: path.join(state.sessionsDir(), "sessions.json"),
+      sessionKey: "agent:main:dashboard:peer-target",
+    };
+    let entry: InternalSessionEntry = { sessionId: "peer-session", updatedAt: 1 };
+    await replaceSessionEntry(scope, entry);
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "peer-operator",
+      scopes: ["operator.read"],
+      assertCurrent() {},
+      recoverySnapshot: {
+        profileId: "peer-operator",
+        scopes: ["operator.read"],
+        assignedRole: null,
+        githubLogin: null,
+        grant: null,
+        aliasBindingIds: [],
+        authPolicy: {
+          generation: "",
+          grantGeneration: "peer-grant",
+          role: "operator",
+          authMethod: "token",
+        },
+        controlUiAdmin: false,
+        localOperator: false,
+        sourceIngress: "control-ui",
+      },
+    });
+
+    await using actor = createReplyRecoveryActorFixture({
+      ...scope,
+      getSessionId: () => entry.sessionId,
+    });
+    const controller = createReplyRestartRecoveryClaimController({
+      ...scope,
+      admissionRunId: "peer-run",
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      getEntry: () => entry,
+      getSessionId: () => entry.sessionId,
+      setEntry: (next) => {
+        entry = next;
+      },
+      acquireSessionActor: () => actor.acquireSessionActor(),
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => undefined,
+      operatorAuthority,
+      requesterOrigin: {
+        sessionKey: "agent:main:dashboard:peer-source",
+        operatorProfileId: "peer-operator",
+      },
+      sourceReplyDeliveryMode: "message_tool_only",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceTool: "sessions_send",
+        sourceSessionKey: "agent:main:dashboard:peer-source",
+        sourceChannel: "webchat",
+      },
+    });
+    await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+    expect(loadSessionEntry(scope)).toMatchObject({
+      restartRecoveryDeliverySourceRunId: "peer-run",
+      restartRecoverySourceIngress: "internal",
+      restartRecoverySourceReplyDeliveryMode: "message_tool_only",
+      restartRecoveryOperatorSource: {
+        sessionKey: scope.sessionKey,
+        sourceRunId: "peer-run",
+        snapshot: { profileId: "peer-operator", sourceIngress: "control-ui" },
+      },
+    });
+  }));
 it.each([
   "execute",
   "cancel",
@@ -347,12 +426,27 @@ it.each([
                 kind: "unknown",
                 target: actor.target,
                 commandId: input.commandId,
-                error: { name: "Error", message: "Adoption receipt lost" },
+                error: {
+                  name: "Error",
+                  message: "Adoption receipt lost",
+                  cause: new Error("Worker response lost", {
+                    cause: Object.assign(new Error("database or disk is full"), {
+                      code: "SQLITE_FULL",
+                    }),
+                  }),
+                },
               };
             });
           const error =
             outcome === "rollback" ? "Canceled before adoption commit" : "Adoption receipt lost";
-          await expect(claimWriter()).rejects.toThrow(error);
+          const failure = await claimWriter().catch((caughtError: unknown) => caughtError);
+          expect(failure).toHaveProperty("message", error);
+          if (outcome === "unknown") {
+            expect(failure).toHaveProperty("code", "outcome-unknown");
+            expect(renderStorageFailureSummary(classifyGatewayStorageFailure(failure))).toBe(
+              "OpenClaw couldn't save your conversation because the disk is full. Free up space on the computer running OpenClaw before continuing.",
+            );
+          }
           await expect(claimWriter()).rejects.toThrow(error);
           await controller.clear();
           await waitForDiagnosticEventsDrained();

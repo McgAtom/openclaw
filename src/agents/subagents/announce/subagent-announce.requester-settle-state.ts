@@ -1,3 +1,4 @@
+import type { DeliveryContext } from "../../../utils/delivery-context.shared.js";
 import type {
   RequesterSettleWakeState,
   SubagentRunRecord,
@@ -10,6 +11,14 @@ export type RequesterSettleWakeBatchState = Omit<RequesterSettleWakeState, "reti
 
 export const REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS = 3;
 const REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS = [30_000, 120_000] as const;
+
+export function needsRequesterSettleFindings(entry: SubagentRunRecord): boolean {
+  // Earlier delivery cannot discharge reconciliation of restart-interrupted work.
+  return (
+    entry.delivery?.status !== "delivered" ||
+    entry.execution.interruptionReason === "gateway-restart"
+  );
+}
 
 /** Only a known missing result may mint another public continuation; private retries reconcile. */
 export function resolveRequesterSettleRetryState(params: {
@@ -39,7 +48,7 @@ export function resolveRequesterSettleRetryState(params: {
   };
 }
 
-export type RequesterSettleWakeBatchCallbacks = {
+type RequesterSettleWakeBatchCallbacks = {
   transitionBatch: (
     batch: readonly SubagentRunRecord[],
     state: RequesterSettleWakeBatchState,
@@ -51,6 +60,15 @@ export type RequesterSettleWakeBatchCallbacks = {
     delivery?: SubagentAnnounceDeliveryResult,
     onCommitted?: () => void | Promise<void>,
   ) => void | Promise<void>;
+};
+
+export type RequesterSettleWakeParams = RequesterSettleWakeBatchCallbacks & {
+  requesterSessionKey: string;
+  requesterOrigin?: DeliveryContext;
+  settledEntry: SubagentRunRecord;
+  signal?: AbortSignal;
+  isSourceCurrent: () => boolean;
+  onDescendantsPending?: (deadline?: number) => void;
 };
 
 export function waitForRequesterDescendants(

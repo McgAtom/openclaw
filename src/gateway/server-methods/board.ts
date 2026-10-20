@@ -55,9 +55,9 @@ import {
   requireMcpAppInteraction,
   resolveMcpAppActiveView,
   resolveMcpAppAllowedToolNames,
-  resolveMcpAppRequesterId,
 } from "../mcp-app-operations.js";
 import { mintMcpAppViewFromTranscript } from "../mcp-app-reconstruction.js";
+import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { sessionObserverScopeKey } from "../session-observer-model.js";
 import { resolveRequestedSessionStoreTarget } from "../session-store-key.js";
 import {
@@ -202,8 +202,19 @@ export function createBoardHandlers(store: BoardStore): GatewayRequestHandlers {
       "board.widget.put",
       validateBoardWidgetPutParams,
       async (invocation) => {
-        const { params: requestParams, respond, context, client } = invocation;
-        const authority = captureBoardRequestAuthority(invocation);
+        const { params: requestParams, respond, context } = invocation;
+        const boardAuthority = captureBoardRequestAuthority(invocation);
+        let requester: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
+        const authority = {
+          ...boardAuthority,
+          assertActive: composeSessionSourceAssertion(
+            [boardAuthority.assertActive],
+            (assertSources) => {
+              assertSources();
+              requester?.authority.assertCurrent();
+            },
+          ),
+        };
         const boardSession = resolveBoardSession(requestParams, context, respond);
         if (!boardSession) {
           return;
@@ -238,11 +249,21 @@ export function createBoardHandlers(store: BoardStore): GatewayRequestHandlers {
             }
             content = { kind: "html", html: document.html };
           } else if (requestParams.content.kind === "mcp-app") {
+            requester = await captureGatewayOperatorRunAuthority({
+              client: invocation.client,
+              context,
+              hasCurrentClientAuthority: invocation.hasCurrentClientAuthority,
+              invocationAuthority: {
+                assertCurrent: boardAuthority.assertActive,
+                signal: invocation.signal,
+              },
+            });
+            authority.assertActive();
             const active = await resolveMcpAppActiveView({
               ...boardSession,
               viewId: requestParams.content.viewId,
               cfg: context.getRuntimeConfig(),
-              requesterId: resolveMcpAppRequesterId(client),
+              requesterId: requester?.authority.profileId,
             });
             authority.assertActive();
             const { view } = active;
@@ -474,7 +495,11 @@ export function createBoardHandlers(store: BoardStore): GatewayRequestHandlers {
           };
           await (memory ? runWithSessionActorStorage(memory, putAndApprove) : putAndApprove());
         } finally {
-          await memory?.actor.release();
+          try {
+            await memory?.actor.release();
+          } finally {
+            requester?.release();
+          }
         }
       },
     ),

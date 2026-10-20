@@ -41,14 +41,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it.for(["keep", "revoke", "cancel", "retire", "sharing"] as const)(
-  "retains only current source tool authority after queueing (%s)",
+it.for(["keep", "revoke", "cancel", "retire", "sharing", "foreign-requester"] as const)(
+  "preserves source authority through board pins (%s)",
   (outcome, { signal: testSignal }) =>
     withOpenClawTestState(profileState, async ({ workspaceDir }) => {
       const revoke = outcome === "revoke";
       const cancel = outcome === "cancel";
       const retire = outcome === "retire";
       const sharing = outcome === "sharing";
+      const foreignRequester = outcome === "foreign-requester";
       const target = { agentId: "main", sessionKey: "agent:main:mcp-admission" };
       const cfg: OpenClawConfig = {
         ...rolePolicyConfig(),
@@ -70,7 +71,7 @@ it.for(["keep", "revoke", "cancel", "retire", "sharing"] as const)(
       await upsertSessionEntryCore(target, {
         sessionId: "mcp-admission-session",
         updatedAt: 1,
-        visibility: sharing ? ("shared" as const) : ("draft" as const),
+        visibility: sharing || foreignRequester ? ("shared" as const) : ("draft" as const),
         createdActor: {
           type: "human" as const,
           source: "profile" as const,
@@ -173,11 +174,12 @@ it.for(["keep", "revoke", "cancel", "retire", "sharing"] as const)(
         method: string,
         input: Record<string, unknown>,
         signal?: AbortSignal,
+        requester = client,
       ) => {
         const respond = vi.fn<RespondFn>();
         await handleGatewayRequest({
           req: { type: "req", id: "mcp-admission", method, params: { ...target, ...input } },
-          client,
+          client: requester,
           context: board.context,
           respond,
           isWebchatConnect: () => false,
@@ -192,6 +194,31 @@ it.for(["keep", "revoke", "cancel", "retire", "sharing"] as const)(
       };
       await appView("source", sourceWidget);
       const sourceView = views[0]!;
+      if (foreignRequester) {
+        const bob = { ...roleClient("write", "mcp-admission-bob"), connId: "mcp-admission-bob" };
+        const control = await invoke(
+          "board.widget.put",
+          { name: "bob-control", content: { kind: "html", html: "<p>Bob can write</p>" } },
+          undefined,
+          bob,
+        );
+        expect(control.mock.calls[0]?.[0]).toBe(true);
+        const before = await boardStore.getSnapshot(target);
+        board.broadcast.mockClear();
+        const rejected = await invoke(
+          "board.widget.put",
+          { name: "destination", content: { kind: "mcp-app", viewId: sourceView.view.viewId } },
+          undefined,
+          bob,
+        );
+        expect(rejected.mock.calls[0]?.[0]).toBe(false);
+        expect(rejected.mock.calls[0]?.[2]?.message).toContain("expired or is not authorized");
+        expect(await boardStore.getSnapshot(target)).toEqual(before);
+        expect(await boardStore.readWidgetMcpApp(target, "destination")).toBeUndefined();
+        expect(board.broadcast).not.toHaveBeenCalled();
+        expect(callTool).not.toHaveBeenCalled();
+        return;
+      }
       await requireMcpAppInteraction(sourceView.view);
       const authorizeSource = sourceView.view.authorizeAppInteraction!;
       const policyEntered = createDeferredCore();

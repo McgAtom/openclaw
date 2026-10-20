@@ -152,6 +152,7 @@ it.for(["keep", "revoke", "cancel", "retire", "sharing"] as const)(
               ...options,
               runtime,
               ...sourceDescriptor,
+              requesterId: clientProfileId,
               toolInput: {},
               toolResult: { content: [] },
               ...(readOnly ? { readOnly: true } : {}),

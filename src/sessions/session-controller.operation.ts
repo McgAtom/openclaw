@@ -628,7 +628,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     abort: (reason) => abortIfAbortable(() => reason ?? createAgentRunDirectAbortError()),
     abortByUser: () => abortIfAbortable(createAgentRunDirectAbortError),
     abortForRestart: () => abortIfAbortable(createAgentRunRestartAbortError),
-    abortForStall() {
+    abortForStall(reason) {
       if (!isReplyOperationAbortable(operation)) {
         return false;
       }
@@ -638,7 +638,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       setResult({ kind: "failed", code: "run_stalled" });
       detachUpstreamAbort();
       abortInternally(
-        Object.assign(createAbortError("Reply operation stalled"), {
+        Object.assign(createAbortError("Reply operation stalled", { cause: reason }), {
           code: "OPENCLAW_SESSION_WATCHDOG",
         }),
       );

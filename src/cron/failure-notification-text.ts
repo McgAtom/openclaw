@@ -51,7 +51,10 @@ export function cronFailureDetailLines(
     ];
   }
   if (failureNotificationDetail.kind === "agent-watchdog") {
-    return [`Cause: ${formatCronWatchdogFailure(failureNotificationDetail.reason)}`];
+    return [
+      `Cause: ${formatCronWatchdogFailure(failureNotificationDetail.reason)}`,
+      "Open automation history and inspect the stalled step before retrying.",
+    ];
   }
   const label =
     failureNotificationDetail.source === "payload" ? "automation script" : "trigger script";

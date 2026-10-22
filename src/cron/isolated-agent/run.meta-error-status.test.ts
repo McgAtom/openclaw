@@ -218,7 +218,10 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
           resolveCronRunErrorReason(result.error, result.provider, result.errorClassification),
           result.failureNotificationDetail,
         ),
-      ).toEqual(["Cause: Session watchdog stopped the run after its execution deadline."]);
+      ).toEqual([
+        "Cause: Session watchdog stopped the run after its execution deadline.",
+        "Open automation history and inspect the stalled step before retrying.",
+      ]);
       expect(result.diagnostics?.summary).toBe(
         "Session watchdog stopped the run after its execution deadline.",
       );

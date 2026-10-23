@@ -1,3 +1,4 @@
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { awaitGateBeforeSettlement } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, it, onTestFinished, vi } from "vitest";
@@ -166,8 +167,8 @@ it.each([true, false])(
       vi.useRealTimers();
     });
     const f = await nativeChild();
-    await f.client.completeTurn({ status: "interrupted" });
     expect(isCodexAppServerLiveThreadClaimed(f.client.client, parentThreadId)).toBe(true);
+    await f.client.completeTurn({ status: "interrupted" });
     const stop = cancelDescendants(f.monitor, {
       requesterTurnRunId: undefined,
       acceptsRequest: (custody) => selected && custody === requestCustody,
@@ -175,7 +176,7 @@ it.each([true, false])(
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await stop).toEqual(selected ? cancelled : noCancellation);
     expect(f.interruptBudgets).toEqual([]);
-    expect(isCodexAppServerLiveThreadClaimed(f.client.client, parentThreadId)).toBe(!selected);
+    expect(isCodexAppServerLiveThreadClaimed(f.client.client, parentThreadId)).toBe(false);
     expect(f.runtime.deliverAgentHarnessCompletion).not.toHaveBeenCalled();
   },
 );
@@ -270,6 +271,8 @@ it.each([
 ] as const)("does not authorize %s during Stop", async (_, attributed, requesterTurnRunId) => {
   const f = await nativeChild(true, false, attributed);
   if (attributed && requesterTurnRunId) {
+    const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
+    onTestFinished(() => warn.mockRestore());
     const consume = vi.fn((cancel: () => Promise<unknown>) => cancel());
     await expect(
       f.monitor.withDescendantCancellation(
@@ -278,6 +281,21 @@ it.each([
       ),
     ).rejects.toThrow("generation changed");
     expect(consume).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "Codex descendant cancellation requester generation mismatch",
+      {
+        agentMatches: true,
+        sessionKeyMatches: true,
+        sessionIdMatches: true,
+        lifecycleMatches: false,
+        registeredHistoryPresent: true,
+        registeredLifecyclePresent: true,
+        requestedLifecyclePresent: true,
+        preparing: false,
+        activeOwnerCount: 0,
+        pendingOwnerCount: 0,
+      },
+    );
   }
   const completion = f.interrupted.then(() => f.client.completeTurn({ status: "interrupted" }));
   try {

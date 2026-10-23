@@ -65,6 +65,7 @@ export type SessionEntryBookkeepingReducer =
 /** Closed internal operations; arbitrary updater callbacks retain prepare/CAS. */
 type SessionEntryPatchStep = (
   | { kind: "fields"; patch: Partial<SessionEntry> }
+  | { kind: "writer-revoke"; runId: string; terminalAtMs?: number }
   | {
       kind: "cron-session";
       sessionKey: string;
@@ -245,6 +246,21 @@ export function reduceSessionEntryPatch(
     return null;
   }
   switch (operation.kind) {
+    case "writer-revoke":
+      return {
+        activeWriterRunId: undefined,
+        ...(operation.terminalAtMs !== undefined &&
+        entry.status === undefined &&
+        entry.lifecycleRunId === operation.runId
+          ? {
+              status: "killed",
+              abortedLastRun: true,
+              lifecycleRunId: undefined,
+              endedAt: operation.terminalAtMs,
+              updatedAt: operation.terminalAtMs,
+            }
+          : {}),
+      };
     case "cron-session":
       return projectCronSessionEntry(operation, existingEntry);
     case "cron-run-continuation": {
@@ -361,7 +377,9 @@ export function reduceSessionEntryPatch(
           : {
               restartRecoveryBeforeAgentReplyState: undefined,
               restartRecoverySourceIngress: undefined,
+              restartRecoverySourceMessageChannel: undefined,
               restartRecoveryOperatorSource: undefined,
+              restartRecoveryRequesterSource: undefined,
               restartRecoveryForceSafeTools: undefined,
             }),
         pendingFinalDelivery: undefined,
@@ -433,6 +451,7 @@ export function reduceSessionEntryPatch(
           ? {
               restartRecoveryBeforeAgentReplyState: entry.restartRecoveryBeforeAgentReplyState,
               restartRecoverySourceIngress: entry.restartRecoverySourceIngress,
+              restartRecoverySourceMessageChannel: entry.restartRecoverySourceMessageChannel,
               restartRecoveryForceSafeTools: entry.restartRecoveryForceSafeTools,
             }
           : {}),

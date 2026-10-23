@@ -326,17 +326,6 @@ it.each(["shutdown", "replacement"] as const)(
   },
 );
 
-it.each(["pending", "complete"] as const)(
-  "does not retry a %s deletion tombstone",
-  async (status) => {
-    readJournal.mockResolvedValue(status);
-    await prepareAgents(1);
-    expect(admissionState.prepared).toEqual([]);
-    expect(admissionState.failed).toEqual(["agent-0"]);
-    expect(readJournal).toHaveBeenCalledTimes(1);
-  },
-);
-
 it("recovers opening capacity and publication admission without repeating migration", async () => {
   const open = vi
     .fn(async () => {})

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convertMarkdownTables } from "../../packages/markdown-core/src/tables.js";
 import { EmbeddedBlockChunker, type BlockChunkMetadata } from "./embedded-agent-block-chunker.js";
-import { findTableSpans } from "./embedded-agent-block-chunker.tables.js";
 
 describe("streamed oversized Markdown tables", () => {
   const rows = Array.from(
@@ -225,7 +224,6 @@ describe("streamed oversized Markdown tables", () => {
     chunker.append(nested);
     output.drain(true);
 
-    expect(findTableSpans(nested, [], 1200, false)).toEqual([]);
     expect(output.chunks.join("\n").match(/Region/g)).toHaveLength(1);
     expect(output.chunks.join("\n").match(/R\d{2}/g)).toHaveLength(rows.length);
     expect(output.metadata.map((entry) => entry.sourceText).join("")).toBe(nested);

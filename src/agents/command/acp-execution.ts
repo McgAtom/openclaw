@@ -16,7 +16,10 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
-import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
+import {
+  buildPersistedUserTurnMessage,
+  createUserTurnTranscriptRecorder,
+} from "../../sessions/user-turn-transcript.js";
 import {
   getAdmittedRunDelegatedAuthority,
   type PreparedAgentRunAdmission,
@@ -26,6 +29,7 @@ import {
   classifyAgentRunTerminalOutcome,
 } from "../agent-run-terminal-outcome.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
+import { projectAgentHarnessTranscriptMessageForDisplay } from "../harness/transcript-visibility.js";
 import { prepareInternalSessionEffectsSession } from "../internal-session-effects.js";
 import { resolveCommandReplyExpectation, resolveReplyCompletion } from "../reply-completion.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
@@ -121,13 +125,16 @@ export async function runAcpAgentCommand(params: {
       : createUserTurnTranscriptRecorder({
           ...(!suppressUserTurnPersistence
             ? {
-                input: {
-                  text: params.transcriptBody || undefined,
-                  media: params.opts.transcriptMedia,
-                  senderIsOwner: params.opts.senderIsOwner,
-                  provenance: params.opts.inputProvenance,
-                  ...(params.opts.privateCompletion ? { display: false as const } : {}),
-                },
+                message: projectAgentHarnessTranscriptMessageForDisplay({
+                  hidden: params.opts.privateCompletion === true,
+                  inputProvenance: params.opts.inputProvenance,
+                  message: buildPersistedUserTurnMessage({
+                    text: params.transcriptBody || undefined,
+                    media: params.opts.transcriptMedia,
+                    senderIsOwner: params.opts.senderIsOwner,
+                    provenance: params.opts.inputProvenance,
+                  }),
+                }),
               }
             : {}),
           target: {

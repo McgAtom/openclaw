@@ -325,51 +325,57 @@ it("mirrors a successful direct ACP turn without duplicating its admitted input"
   });
 });
 
-it.each(["success", "failure"] as const)(
-  "keeps a private direct ACP input hidden after backend %s",
-  async (outcome) => {
-    await withAcpSession(async (storePath) => {
-      attemptExecutionMocks.persistAcpTurnTranscript.mockImplementationOnce(
-        persistAcpTurnTranscript,
-      );
-      mockAcpManager({
-        runTurn: async (input) => {
-          const params = input as acpManagerModule.AcpRunTurnInput;
-          await params.onBeforePrompt?.();
-          if (outcome === "failure") {
-            throw new AcpRuntimeError("ACP_TURN_FAILED", "synthetic private backend failure");
-          }
-          await params.onEvent?.({ type: "text_delta", text: "Private answer." });
-          await params.onEvent?.({ type: "done", status: "completed", stopReason: "stop" });
-        },
-      });
-
-      const run = agentCommand(
-        {
-          message: "Private accepted input.",
-          sessionKey: "agent:codex:acp:test",
-          privateCompletion: true,
-        },
-        runtime,
-      );
-      if (outcome === "failure") {
-        await expect(run).rejects.toThrow("synthetic private backend failure");
-      } else {
-        await run;
-      }
-      expect(await readAcpMessages(storePath)).toEqual([
-        expect.objectContaining({
-          role: "user",
-          content: "Private accepted input.",
-          display: false,
-        }),
-        ...(outcome === "success"
-          ? [expect.objectContaining({ role: "assistant", display: false })]
-          : []),
-      ]);
+it.each([
+  ["success", { privateCompletion: true }],
+  ["failure", { privateCompletion: true }],
+  [
+    "success",
+    { inputProvenance: { kind: "internal_system", sourceTool: "progress_card_refresh" } },
+  ],
+  [
+    "failure",
+    { inputProvenance: { kind: "internal_system", sourceTool: "progress_card_refresh" } },
+  ],
+] as const)("keeps direct ACP input hidden after backend %s (%j)", async (outcome, visibility) => {
+  await withAcpSession(async (storePath) => {
+    attemptExecutionMocks.persistAcpTurnTranscript.mockImplementationOnce(persistAcpTurnTranscript);
+    mockAcpManager({
+      runTurn: async (input) => {
+        const params = input as acpManagerModule.AcpRunTurnInput;
+        await params.onBeforePrompt?.();
+        if (outcome === "failure") {
+          throw new AcpRuntimeError("ACP_TURN_FAILED", "synthetic private backend failure");
+        }
+        await params.onEvent?.({ type: "text_delta", text: "Private answer." });
+        await params.onEvent?.({ type: "done", status: "completed", stopReason: "stop" });
+      },
     });
-  },
-);
+
+    const run = agentCommand(
+      {
+        message: "Private accepted input.",
+        sessionKey: "agent:codex:acp:test",
+        ...visibility,
+      },
+      runtime,
+    );
+    if (outcome === "failure") {
+      await expect(run).rejects.toThrow("synthetic private backend failure");
+    } else {
+      await run;
+    }
+    expect(await readAcpMessages(storePath)).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: "Private accepted input.",
+        display: false,
+      }),
+      ...(outcome === "success"
+        ? [expect.objectContaining({ role: "assistant", display: false })]
+        : []),
+    ]);
+  });
+});
 
 it.each(["hook suppression", "cancellation", "source revocation"] as const)(
   "does not submit or persist direct ACP input after %s during write preparation",

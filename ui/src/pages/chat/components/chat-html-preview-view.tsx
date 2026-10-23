@@ -1,13 +1,17 @@
-import type { LazyCustomElementRequestController } from "../../../app/lazy-custom-element.ts";
+import { createMemo, createSignal, Errored, lazy, Loading, onSettled, Show } from "solid-js";
+import {
+  cancelStaleChunkRecovery,
+  isStaleChunkImportError,
+  retryStaleChunkReloadWhenReachable,
+} from "../../../app/stale-chunk-reload.ts";
 import { LazyViewError } from "../../../components/solid/lazy-view-error.tsx";
+import { PanelLoadingSkeleton } from "../../../components/solid/panel-loading-skeleton.tsx";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
-import { solidContent, type LegacyDirectiveResult } from "../../../lit/solid-content.tsx";
 import type { SessionFileSource } from "./chat-sidebar-content-types.ts";
 
-type PreviewProps = {
-  state: LazyCustomElementRequestController["visibleState"];
-  onRetry: () => void;
+export type PreviewProps = {
+  desktop?: boolean;
   content: string;
   sourceIdentity: string;
   title: string;
@@ -15,49 +19,107 @@ type PreviewProps = {
   sessionFileSource?: SessionFileSource;
 };
 
-function HtmlPreview(props: PreviewProps) {
+const Preview = lazy(() => import("./chat-html-preview-element.tsx"), {
+  export: "ChatHtmlPreview",
+});
+
+export function HtmlPreviewLoading() {
+  return <PanelLoadingSkeleton variant="document" label={t("common.loading")} compact />;
+}
+
+export function HtmlPreview(props: PreviewProps) {
+  const [attempt, setAttempt] = createSignal(0);
   return (
-    <>
-      {props.state?.status === "error" ? (
-        <LazyViewError
-          error={props.state.error}
-          stale={props.state.stale}
-          onRetry={props.onRetry}
+    <Loading on={attempt()} fallback={<HtmlPreviewLoading />}>
+      <Errored
+        fallback={(error, reset) => {
+          // Retire failed-file recovery without remounting an already-rendered preview.
+          const source = createMemo(() => [error(), props.sourceIdentity, props.content] as const, {
+            equals: (previous, next) => previous.every((value, index) => value === next[index]),
+          });
+          return (
+            <Show when={source()} keyed>
+              {([failure]) => {
+                const stale = isStaleChunkImportError(failure);
+                const [recovery, setRecovery] = createSignal<Promise<boolean>>();
+                const recovered = createMemo(() => recovery());
+                let active = true;
+                let retryButton: HTMLButtonElement | undefined;
+                onSettled(() => () => {
+                  active = false;
+                  if (stale) {
+                    cancelStaleChunkRecovery();
+                  }
+                });
+                const retry = () => {
+                  if (!active || !retryButton?.isConnected) {
+                    return;
+                  }
+                  if (!stale) {
+                    setAttempt((value) => value + 1);
+                    reset();
+                    return;
+                  }
+                  const identity = props.sourceIdentity;
+                  const content = props.content;
+                  const isCurrent = () =>
+                    active &&
+                    error() === failure &&
+                    props.sourceIdentity === identity &&
+                    props.content === content;
+                  void setRecovery(
+                    retryStaleChunkReloadWhenReachable({ canReload: isCurrent }).then(
+                      (reloading) => {
+                        if (!reloading && isCurrent()) {
+                          setAttempt((value) => value + 1);
+                          reset();
+                        }
+                        return reloading;
+                      },
+                    ),
+                  );
+                };
+                return (
+                  <Loading on={recovery()} fallback={<HtmlPreviewLoading />}>
+                    {recovered()}
+                    <LazyViewError
+                      error={error()}
+                      stale={stale}
+                      onRetry={retry}
+                      retryRef={(element) => (retryButton = element)}
+                    />
+                  </Loading>
+                );
+              }}
+            </Show>
+          );
+        }}
+      >
+        <Preview
+          desktop={props.desktop ?? false}
+          html={props.content}
+          sourceIdentity={props.sourceIdentity}
+          title={props.title}
+          embedSandboxMode={props.embedSandboxMode}
+          sessionFileSource={props.sessionFileSource}
         />
-      ) : props.state ? (
-        <div role="status">{t("common.loading")}</div>
-      ) : undefined}
-      <openclaw-chat-html-preview
-        prop:html={props.content}
-        prop:sourceIdentity={props.sourceIdentity}
-        prop:title={props.title}
-        prop:embedSandboxMode={props.embedSandboxMode}
-        prop:sessionFileSource={props.sessionFileSource}
-      />
-    </>
+      </Errored>
+    </Loading>
   );
 }
 
-type SourceFallbackProps = {
+export type SourceFallbackProps = {
   error: Error;
   stale: boolean;
   onRetry: () => void;
   text: string;
 };
 
-function HtmlPreviewSourceFallback(props: SourceFallbackProps) {
+export function HtmlPreviewSourceFallback(props: SourceFallbackProps) {
   return (
     <>
       <LazyViewError error={props.error} stale={props.stale} onRetry={props.onRetry} />
       <pre class="sidebar-attachment-preview__text">{props.text}</pre>
     </>
   );
-}
-
-export function renderHtmlPreview(props: PreviewProps): LegacyDirectiveResult {
-  return solidContent(HtmlPreview, props);
-}
-
-export function renderHtmlPreviewSourceFallback(props: SourceFallbackProps): LegacyDirectiveResult {
-  return solidContent(HtmlPreviewSourceFallback, props);
 }

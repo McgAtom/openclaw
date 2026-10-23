@@ -1,4 +1,4 @@
-import { createMemo, type Accessor } from "solid-js";
+import { createMemo, type Element, type Accessor } from "solid-js";
 import type { ChatAccountSelection } from "../../../../../packages/gateway-protocol/src/index.ts";
 import { resolveModelRuntimeRoute } from "../../../../../src/shared/model-runtime-route.js";
 import type {
@@ -35,7 +35,6 @@ import {
   resolveModelRuntimeEntry,
 } from "../../../lib/model-runtime-choice.ts";
 import { registerEnglishCatalog, t } from "../../../lib/reactive/i18n.ts";
-import { solidContent } from "../../../lit/solid-content.tsx";
 import { ChatEffortPicker, type ChatEffortPickerParams } from "./chat-effort-picker.tsx";
 import type { ChatModelAccountSection } from "./chat-model-account-control.ts";
 import {
@@ -52,7 +51,7 @@ type ChatContextWindowTarget = Pick<
   "contextWindow" | "contextWindows" | "contextWindowDefault"
 >;
 
-type ChatModelControlsProps = {
+export type ChatModelControlsProps = {
   modelAuthStatusResult?: ModelAuthStatusResult | null;
   accountSelection?: ChatAccountSelection | null;
   renderAccountSection?: (model: string) => ChatModelAccountSection | undefined;
@@ -63,6 +62,8 @@ type ChatModelControlsProps = {
   loading: boolean;
   modelCatalog: ModelCatalogEntry[];
   modelCatalogState: ChatModelCatalogState;
+  /** Lets a lazy route wrap catalog status without adding its read to Chat boot. */
+  renderModelCatalogStatus?: (render: () => Element) => Element;
   modelOverrides?: Readonly<Record<string, string | null | undefined>>;
   modelSelectionLocked?: boolean;
   modelSelectionTarget?: SessionsListResult["defaults"]["modelSelectionTarget"];
@@ -91,7 +92,6 @@ type ChatModelControlsProps = {
   onModelSelect?: (value: string, sessionKey: string, agentRuntime?: string | null) => unknown;
   onModelPickerTargetRetry?: (groupId: string) => unknown;
   onModelPickerTargetSelect?: (groupId: string, value: string) => unknown;
-  onRequestUpdate?: () => void;
   onThinkingSelect?: (value: string, sessionKey: string) => unknown;
 };
 
@@ -547,7 +547,7 @@ function createChatModelControls(props: ChatModelControlsProps): Accessor<{
       effortMutationDisabled ||
       !hasResolvableModel ||
       (thinking.options.length === 0 && fastMode.disabled);
-    // CSS keeps the empty effort slot beside an open picker until its catalog resolves.
+    // Keep the effort control mounted but hidden until its catalog resolves.
     const reserveEffortPicker = !hasResolvableModel;
     return {
       model: {
@@ -569,6 +569,7 @@ function createChatModelControls(props: ChatModelControlsProps): Accessor<{
         disabled: modelDisabled,
         disabledReason: props.modelMutationDisabledReason,
         modelCatalogState: catalogState,
+        renderModelCatalogStatus: props.renderModelCatalogStatus,
         open: props.modelPickerOpen,
         modelSelectionLocked: props.modelSelectionLocked === true,
         selectionScopeDescription: policy?.restricted
@@ -597,7 +598,6 @@ function createChatModelControls(props: ChatModelControlsProps): Accessor<{
           props.onModelSelect?.(next, targetSessionKey, agentRuntime),
         onTargetRetry: props.onModelPickerTargetRetry,
         onTargetSelect: props.onModelPickerTargetSelect,
-        onRequestUpdate: props.onRequestUpdate,
       },
       effort: {
         disabled: effortDisabled,
@@ -611,7 +611,6 @@ function createChatModelControls(props: ChatModelControlsProps): Accessor<{
         thinking,
         onFastModeSelect: async (next, targetSessionKey) =>
           props.onFastModeSelect?.(next, targetSessionKey),
-        onRequestUpdate: props.onRequestUpdate,
         onThinkingSelect: async (next, targetSessionKey) =>
           props.onThinkingSelect?.(next, targetSessionKey),
         reserved: reserveEffortPicker,
@@ -628,8 +627,4 @@ export function ChatModelControls(props: ChatModelControlsProps) {
       <ChatEffortPicker {...controls().effort} />
     </div>
   );
-}
-
-export function renderChatModelControls(props: ChatModelControlsProps) {
-  return solidContent(ChatModelControls, props);
 }

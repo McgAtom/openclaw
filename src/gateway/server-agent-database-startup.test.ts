@@ -619,6 +619,9 @@ it.for([
           code: "agent-database-inspection-pending",
         });
         if (outcome === "recover") {
+          if (holdSubagentRestoration) {
+            await withinTest(restorationEntered.promise, signal);
+          }
           chatClient = await connectWebchatClient({ port });
           gatewayReplyMock.mockImplementationOnce(async () => {
             dispatched.resolve();

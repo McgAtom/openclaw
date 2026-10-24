@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { applyEmbeddedAttemptToolsAllow } from "../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import { readToolAllowlistIntersection } from "../agents/tool-policy.js";
+import { normalizeTranscriptJsonValue } from "../config/sessions/transcript-json.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { PluginHookAgentContext } from "./hook-types.js";
 import { createHookRunner } from "./hooks.js";
@@ -10,7 +11,10 @@ import {
   createMockPluginRegistry,
   TEST_PLUGIN_AGENT_CTX,
 } from "./hooks.test-fixtures.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
+import { createTestPluginRegistry } from "./registry-runtime.test-helpers.js";
 import { createEmptyPluginRegistry } from "./registry.js";
+import { createPluginRecord } from "./status.test-helpers.js";
 import type {
   PluginHookBeforeAgentFinalizeResult,
   PluginHookBeforePromptBuildResult,
@@ -22,6 +26,107 @@ type PromptHook = Pick<
   "handler" | "requiresToolAuthority" | "priority"
 >;
 const phaseEvent = { prompt: "test", messages: [] };
+
+describe("pre-durable channel ingress policy", () => {
+  const context = () => ({
+    channelId: "discord",
+    accountId: "account",
+    signal: new AbortController().signal,
+  });
+  const raw = { id: "event", channel_id: "room", content: "private" };
+
+  function ownedPolicy(allowConversationAccess: boolean) {
+    const builder = createTestPluginRegistry();
+    const record = createPluginRecord({ id: "ingress-policy", origin: "global" });
+    builder.registry.plugins.push(record);
+    const api = builder.createApi(record, { config: {}, hookPolicy: { allowConversationAccess } });
+    const instance = getPluginInstance(record)!;
+    onTestFinished(async () => {
+      await instance.dispose();
+    });
+    return { api, instance, registry: builder.registry };
+  }
+
+  it.each([false, true])("requires the existing conversation-access grant (%s)", (allowed) => {
+    const owner = ownedPolicy(allowed);
+    owner.api.on("before_channel_ingress", () => undefined);
+    expect(owner.registry.typedHooks.map((entry) => entry.hookName)).toEqual(
+      allowed ? ["before_channel_ingress"] : [],
+    );
+  });
+
+  it("chains isolated transformed events and retains the earlier replacement on a later decline", async () => {
+    const runner = createHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_channel_ingress",
+          priority: 2,
+          handler: () => ({ event: { ...raw, content: "[redacted]" } }),
+        },
+        {
+          hookName: "before_channel_ingress",
+          handler: (value) => {
+            expect(value).toEqual({ event: { ...raw, content: "[redacted]" } });
+            return {};
+          },
+        },
+      ]),
+    );
+    const result = await runner.runBeforeChannelIngress({ event: raw }, context());
+    expect(result?.event).toEqual({ ...raw, content: "[redacted]" });
+    result?.assertCurrent();
+    expect(raw.content).toBe("private");
+  });
+
+  it("does not fail open or expose policy error contents after a timeout", async () => {
+    const release = createDeferred();
+    const error = vi.fn();
+    const runner = createHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_channel_ingress",
+          timeoutMs: 2,
+          handler: async () => {
+            await release.promise;
+            throw new Error("PRIVATE_ERROR_SENTINEL");
+          },
+        },
+      ]),
+      {
+        logger: { error, warn: vi.fn() },
+        failurePolicyByHook: { before_channel_ingress: "fail-open" },
+      },
+    );
+    try {
+      await expect(runner.runBeforeChannelIngress({ event: raw }, context())).rejects.toThrow(
+        "Channel ingress transform failed",
+      );
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+    }
+  });
+
+  it("rejects a result from an actual registered instance retired during its awaited policy", async () => {
+    const owner = ownedPolicy(true);
+    const entered = createDeferred();
+    const release = createDeferred();
+    owner.api.on("before_channel_ingress", async () => {
+      entered.resolve();
+      await release.promise;
+      return { event: { ...raw, content: "[redacted]" } };
+    });
+    const promise = createHookRunner(owner.registry).runBeforeChannelIngress(
+      { event: raw },
+      context(),
+    );
+    await entered.promise;
+    const disposing = owner.instance.dispose();
+    release.resolve();
+    await expect(promise).rejects.toThrow(/Channel ingress transform/);
+    await disposing;
+  });
+});
 function promptRunner(hooks: PromptHook[]) {
   const registry = createEmptyPluginRegistry();
   registry.typedHooks.push(
@@ -420,6 +525,84 @@ describe("prompt hook invocation", () => {
 const promptEvent = (prompt: string) => ({ prompt, messages: [] });
 
 describe("before_prompt_build dispatch", () => {
+  it.each([
+    Object.freeze({ buffer: new SharedArrayBuffer(4) }),
+    new Error("shared", { cause: new Uint8Array(new SharedArrayBuffer(4)) }),
+    {
+      get buffer() {
+        return new SharedArrayBuffer(4);
+      },
+    },
+  ])("rejects unowned shared memory beside an owned payload (%#)", async (unowned) => {
+    const message = { role: "user", content: [{ type: "text", text: "owned" }] };
+    normalizeTranscriptJsonValue(message, "");
+    const handler = vi.fn();
+    const runner = promptRunner([{ handler }]);
+    await expect(
+      runner.runBeforePromptBuild({ prompt: "test", messages: [message, unowned] }, {}),
+    ).rejects.toThrow("before_prompt_build mutable input isolation failed");
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1, 2])(
+    "scans owned payloads only in the detached clone with %i handlers",
+    async (handlers) => {
+      const message = {
+        role: "user",
+        content: [{ type: "text", text: "caller history" }],
+      };
+      normalizeTranscriptJsonValue(message, "");
+      const owned = new Set<object>([message.content, message.content[0]!]);
+      const ownKeys = vi.spyOn(Reflect, "ownKeys");
+      const clone = vi.spyOn(globalThis, "structuredClone");
+      const received: unknown[] = [];
+      try {
+        for (const hookName of ["before_prompt_build", "agent_turn_prepare"] as const) {
+          const runner = createHookRunner(
+            createMockPluginRegistry(
+              Array.from({ length: handlers }, (_, index) => ({
+                hookName,
+                handler: (value: unknown) => {
+                  const event = value as { messages: (typeof message)[] };
+                  const block = event.messages[0]!.content[0]!;
+                  expect(block.text).toBe(index === 0 ? "caller history" : "handler mutation");
+                  block.text = "handler mutation";
+                  received.push(event);
+                },
+              })),
+            ),
+          );
+          for (let turn = 0; turn < 2; turn++) {
+            ownKeys.mockClear();
+            clone.mockClear();
+            const event = { prompt: "test", messages: [message], queuedInjections: [] };
+            if (hookName === "before_prompt_build") {
+              await runner.runBeforePromptBuild(event, {});
+            } else {
+              await runner.runAgentTurnPrepare(event, {});
+            }
+            expect(clone).toHaveBeenCalledTimes(handlers ? 1 : 0);
+            expect(ownKeys.mock.calls.filter(([value]) => owned.has(value))).toHaveLength(0);
+            // Detached content still gets the complete post-clone scan.
+            if (handlers) {
+              const snapshot = clone.mock.results[0]!.value as typeof event;
+              expect(
+                ownKeys.mock.calls.some(([value]) => value === snapshot.messages[0]!.content[0]),
+              ).toBe(true);
+            }
+            expect(message.content[0]!.text).toBe("caller history");
+          }
+        }
+        if (handlers) {
+          expect(received[0]).not.toBe(received[handlers]);
+        }
+      } finally {
+        ownKeys.mockRestore();
+        clone.mockRestore();
+      }
+    },
+  );
+
   it("keeps sibling hook families and other runners active during dispatch", async () => {
     const turnPrepare = vi.fn(() => ({ prependContext: "turn" }));
     const heartbeat = vi.fn(() => ({ appendContext: "heartbeat" }));

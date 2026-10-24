@@ -28,6 +28,49 @@ owner; the grouped agent roster does not display catalog rows. Widgets use the p
 host on a separate loopback listener. Plugins are small synthetic modules exercising
 registration/loading, not replicas of any private plugin implementation.
 
+`--latency-profile live-fast` replays a fast-handshake delivery envelope:
+challenge no earlier than 439 ms from navigation, connect reply no earlier than
+41 ms after send, ordinary messages 20 ms, and no inter-frame spacing. Critical
+boot methods have individual request-to-delivery floors:
+
+| Method                        | Floor (ms) |
+| ----------------------------- | ---------: |
+| `chat.startup`                |        220 |
+| `sessions.resolve`            |        216 |
+| `sessions.describe`           |        149 |
+| `sessions.list`               |        195 |
+| `sessions.subscribe`          |        117 |
+| `sessions.messages.subscribe` |        183 |
+| `board.get`                   |        189 |
+| `users.list`                  |        144 |
+| `agents.list`                 |        149 |
+| `agent.identity.get`          |        150 |
+| `plugins.controlUi.list`      |        125 |
+| `cron.list`                   |        165 |
+| `workboard.boards.list`       |        141 |
+
+These rounded medians come from the first reply per method in six signed-in
+reload observations (three chat, three dashboard). Challenge delivery was
+344–566 ms from navigation; connect RTT was 25–162 ms. The observations include
+browser queueing and server work: replaying them as floors is a conservative
+scheduling scenario, not an isolated network model. Ordinary-message delay stays
+at 20 ms to avoid applying boot congestion to every later event. Repeated calls
+still use the method floor; they do not reproduce the faster later live replies.
+Socket-open timestamps were absent, so the challenge uses a navigation floor,
+not an inferred socket-open delay. Document/proxy latency is not simulated.
+
+`--latency-profile legacy-handshake` reproduces the earlier campaign scenario:
+340 ms challenge floor, 220 ms connect, 195 ms resolve/describe, 20 ms ordinary
+messages and zero frame spacing. The default profile retains the original
+35 ms / 4 ms / no challenge floor settings. Explicit `--latency-ms`,
+`--frame-gap-ms`, `--connect-not-before-ms`, `--method-latency-ms` and
+`--sidebar-query-latency-ms` overrides take precedence over any profile.
+`summary.json` records the selected profile and all effective floors. Warm-reload
+milestones include `socketOpen`, `challenge`, `connectSent`, `hello` (reply
+dispatch) and dashboard-stage `helloHandledMs`; keep the handled milestone as a
+separate gate when moving work near the handshake. Profile selection alone does
+not qualify a product scheduling change against live behavior.
+
 `--latency-ms` sets the inbound message delay (default 35 ms). `--frame-gap-ms`
 sets the minimum separation between Gateway message deliveries (default 4 ms).
 Concurrent requests remain concurrent; replies share one serialized wire.
@@ -48,6 +91,21 @@ Online measurements.
 `--bundle-dir` serves an already built production bundle instead of rebuilding it;
 keep its build identity equal to the checkout head. This preserves a baseline
 bundle while production sources are edited.
+
+For a boot-weight comparison, use `--bundle-dir <base> --compare-bundle-dir <head>
+--runs 20 --untraced --cold-http-cache`. The runs alternate builds and restore
+each build's own warm state. Every run records `presentation.firstNonemptyTranscriptMs`
+and `presentation.firstEnabledComposerMs` from visible DOM observed on animation
+frames; these are readiness observations, not compositor paint timestamps.
+Keep profiling and the optional warm-reload probes out of this timing run.
+Console progress contains readiness and host load; full RPC and resource records
+are serialized to `summary.json` after all runs, outside the preview-server workload.
+
+`pnpm ui:check-performance --module-attribution --dist <build>` ranks the top
+30 emitted JavaScript modules in each route's preload graph. Add `--json` for all
+modules and mapping coverage. It gzips source-mapped generated ranges independently,
+so those scores identify expensive modules but are not additive transfer costs;
+the existing shipped gzip sidecars remain the route budget authority.
 
 Every reload replays the warm visit's persisted sidebar and trimmed v8 transcript
 (after unloading the app), local storage and session storage; the HTTP cache stays warm.

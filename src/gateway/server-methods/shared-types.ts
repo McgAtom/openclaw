@@ -293,6 +293,7 @@ type GatewayKernelContext = {
     params: ChatStartupProjectionReadParams,
   ) => Promise<ChatStartupProjectionResult | undefined>;
   getHealthCache: () => HealthSummary | null;
+  getReadiness?: import("../server/readiness.js").ReadinessChecker;
   logHealth: { error: (message: string) => void };
   logGateway: SubsystemLogger;
   publishPresence: () => void;
@@ -331,6 +332,10 @@ type GatewayKernelContext = {
   wizardRunner: import("./wizard.js").SetupWizardRunner;
   channelWizardRunner: import("./wizard.js").ChannelSetupWizardRunner;
   unavailableGatewayMethods?: ReadonlySet<string>;
+  inputRecovery?: Pick<
+    import("../agent-input-recovery.js").GatewayInputRecovery,
+    "isPending" | "waitForAgentInputRecovery"
+  >;
 };
 
 /** Socket-bound services and connection state supplied by the Gateway transports. */

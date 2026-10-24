@@ -27,6 +27,7 @@ import { createMockGatewayRecoveryRuntime } from "./server-recovery-runtime.test
 import type { SessionSendDelivery } from "./session-send-delivery.js";
 import { readSessionSendDeliveryAdmission } from "./session-send-delivery.js";
 import { recoverSessionSendDeliveries } from "./session-send-recovery.js";
+import { verifyRecoveryNoticeTurnOrdering } from "./session-send-recovery.notice-order.test-support.js";
 import {
   config,
   delivery,
@@ -133,7 +134,8 @@ const storeTarget = (key: string) => ({
   storePath: "/fixture/sessions.json",
   store: { [key]: key === delivery.source.sessionKey ? sourceEntry : targetEntry },
 });
-const recover = (signal = controller().signal) => recoverSessionSendDeliveries(context, signal);
+const recover = (signal = controller().signal) =>
+  recoverSessionSendDeliveries(context, signal).settled;
 async function recoverWithTimers(signal = controller().signal) {
   await Promise.all([recover(signal), vi.runAllTimersAsync()]);
 }
@@ -543,6 +545,9 @@ it("resumes chat inputs in acceptance order across pages, excluding expired and 
   );
 });
 
+it("does not close an accepted chat turn with a blocked-delivery notice", ({ signal }) =>
+  verifyRecoveryNoticeTurnOrdering({ io, sourceEntry, resumeChat, warn, recover }, signal));
+
 it.each(["replaced", "archived-source", "archived-target"] as const)(
   "settles %s inputs durably so the second restart is silent",
   async (change) => {
@@ -941,7 +946,7 @@ it.each(recoveryDiagnosticCases)(
     for (const retry of retries) {
       warn.mockImplementationOnce(() => retry.resolve());
     }
-    const recovery = recoverSessionSendDeliveries(context, controller().signal);
+    const recovery = recoverSessionSendDeliveries(context, controller().signal).settled;
     for (const retry of retries) {
       // A dynamic requester import can finish after an empty fake-timer drain.
       await Promise.race([retry.promise, recovery]);

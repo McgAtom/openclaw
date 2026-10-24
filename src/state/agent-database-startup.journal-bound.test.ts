@@ -78,7 +78,7 @@ async function prepareAgents(
       agentId: string;
       signal: AbortSignal;
       assertCurrent: () => void;
-    }) => Promise<void>;
+    }) => Promise<AsyncDisposable | void>;
     migrateAgent?: () => Promise<void>;
     publishAgent?: () => Promise<void>;
     afterActivation?: (stop: () => Promise<void>) => Promise<void>;
@@ -118,6 +118,50 @@ async function prepareAgents(
   });
   return agentIds;
 }
+
+it.each([
+  { failure: undefined, retry: false },
+  { failure: "migration", retry: false },
+  { failure: "publication", retry: false },
+  { failure: undefined, retry: true },
+  { failure: "publication", retry: true },
+] as const)(
+  "retains the prepared resource until startup settles ($failure, retry=$retry)",
+  async ({ failure, retry }) => {
+    const events: string[] = [];
+    let released = false;
+    const step = async (phase: string) => {
+      expect(released).toBe(false);
+      events.push(phase);
+      if (phase === failure) {
+        throw new Error("startup fixture refusal");
+      }
+    };
+    const open = vi.fn(async () => ({
+      async [Symbol.asyncDispose]() {
+        released = true;
+        events.push("released");
+      },
+    }));
+    if (retry) {
+      open.mockRejectedValueOnce(
+        new SqliteWorkerError("SQLite worker store capacity reached", "overloaded"),
+      );
+    }
+    await prepareAgents(1, {
+      openAgent: open,
+      migrateAgent: () => step("migration"),
+      publishAgent: () => step("publication"),
+    });
+    expect(events).toEqual(
+      failure === "migration"
+        ? ["migration", "released"]
+        : ["migration", "publication", "released"],
+    );
+    expect(admissionState.failed).toEqual(failure ? ["agent-0"] : []);
+    expect(open).toHaveBeenCalledTimes(retry ? 2 : 1);
+  },
+);
 
 it("prepares more than 128 agents without overflowing state-read admission", async () => {
   let active = 0;

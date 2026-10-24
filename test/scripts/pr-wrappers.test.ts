@@ -1,6 +1,7 @@
 // PR wrapper tests cover maintainer helper command delegation.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   constants as fsConstants,
@@ -17,6 +18,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
@@ -25,6 +27,7 @@ import {
 } from "../../scripts/pr-lib/gh-api-preflight.mjs";
 import { copyTreeCloseOnExec } from "../helpers/close-on-exec-copy.js";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
+import { awaitGateBeforeSettlement, createDeferred, withinTest } from "../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
   REVIEWED_HEAD,
@@ -556,7 +559,7 @@ exit "$status"
   });
 
   itPosix("requires a separate operator confirmation for merge recovery", () => {
-    const fixture = makeMismatchedWrapperRepo();
+    const fixture = makeMismatchedWrapperRepo({ toolingOnly: true });
     const recovery = (...args: string[]) => [
       "123",
       outcomeOid,
@@ -974,15 +977,32 @@ exit "$status"
     expect(matchingEntries(fixture.root, "openclaw-pr-git.")).toEqual(adapters);
   });
 
-  function materializeAnchor(fixture: ReturnType<typeof makeMismatchedWrapperRepo>) {
-    const materialized = runWrapper(fixture, ["unknown-command"]);
-    expect(materialized.status, materialized.stderr).toBe(2);
+  function materializeAnchor(
+    fixture: ReturnType<typeof makeMismatchedWrapperRepo>,
+    env: NodeJS.ProcessEnv = fixture.env,
+  ) {
+    const node = join(fixture.bin, "node");
+    // Crash the creator at its supervisor exec, after extraction and dependency
+    // verification. This retains a real crash leftover without an orphan child.
+    writeExecutable(
+      node,
+      '#!/bin/sh\ncase "$1" in\n  */process-group-runner.mjs) kill -KILL "$$" ;;\nesac\nexec "$PR_TEST_REAL_NODE" "$@"\n',
+    );
+    let materialized;
+    try {
+      materialized = runWrapper(fixture, ["ci-dispatch", "123"], "linked", {
+        env: { ...env, PR_TEST_REAL_NODE: requireNodeTool("node") },
+      });
+    } finally {
+      rmSync(node);
+    }
+    expect(materialized.signal, materialized.stderr).toBe("SIGKILL");
     expect(materialized.stderr).toContain("running wrapper code materialized from");
     const anchors = matchingEntries(fixture.root, "openclaw-pr-anchor.");
     expect(anchors).toHaveLength(1);
     const anchor = join(fixture.root, anchors[0]!);
     expect(statSync(anchor).mode & 0o777).toBe(0o700);
-    return anchor;
+    return { anchor, result: materialized };
   }
 
   function advanceAnchorReviewDependency(fixture: ReturnType<typeof makeMismatchedWrapperRepo>) {
@@ -1022,21 +1042,6 @@ exit "$status"
     return { ...fixture, tooling, stale, run };
   }
 
-  function advanceToolingMain(fixture: ReturnType<typeof makeToolingRootFixture>) {
-    const previousHead = fixture.gitText(["rev-parse", "HEAD"], fixture.tooling);
-    const tree = fixture.gitText(["rev-parse", "HEAD^{tree}"], fixture.tooling);
-    const advanced = fixture.gitText([
-      "commit-tree",
-      tree,
-      "-p",
-      previousHead,
-      "-m",
-      "test: advance tooling main",
-    ]);
-    fixture.git(fixture.canonical, ["push", "origin", `${advanced}:refs/heads/main`]);
-    return advanced;
-  }
-
   const itRecovery = process.platform === "linux" ? it : it.skip;
   const mvHelp =
     process.platform === "linux" ? spawnSync("mv", ["--help"], { encoding: "utf8" }).stdout : "";
@@ -1053,7 +1058,7 @@ exit "$status"
     );
     expect(runtime.status, runtime.stderr).toBe(0);
     parkCanonicalOffAnchor(fixture);
-    const anchor = materializeAnchor(fixture);
+    const { anchor } = materializeAnchor(fixture);
     fixture.git(fixture.canonical, ["checkout", "main"]);
     const modules = join(anchor, "node_modules");
     const donor = join(fixture.root, "isolated-tooling");
@@ -1300,15 +1305,13 @@ exit "$status"
         "openclaw.pr.toolingRoot",
         join(fixture.root, "invalid-config-root"),
       ]);
-      const result = fixture.run({ OPENCLAW_PR_TOOLING_ROOT: fixture.tooling });
-      expect(result.status, result.stdout + result.stderr).toBe(2);
+      const { anchor, result } = materializeAnchor(fixture, {
+        ...fixture.env,
+        OPENCLAW_PR_TOOLING_ROOT: fixture.tooling,
+      });
       expect(result.stderr).toContain(`scripts/pr tooling root: ${fixture.tooling}`);
       expect(result.stderr).toContain("running wrapper code materialized from");
-      const anchor = readdirSync(fixture.root).find((name) =>
-        name.startsWith("openclaw-pr-anchor."),
-      );
-      expect(anchor).toBeDefined();
-      expect(realpathSync(join(fixture.root, anchor!, "node_modules/tsx"))).toBe(
+      expect(realpathSync(join(anchor, "node_modules/tsx"))).toBe(
         realpathSync(join(fixture.tooling, "node_modules/tsx")),
       );
       expect(fixture.git(fixture.canonical, ["rev-parse", "HEAD"]).stdout).toBe(canonicalHead);
@@ -1317,103 +1320,174 @@ exit "$status"
     },
   );
 
-  itPosix.each([
-    { repairs: true, largeOutput: false },
-    { repairs: false, largeOutput: false },
-    { repairs: true, largeOutput: true },
-  ])(
-    "refreshes a stale clean main tooling root once (install repairs=$repairs, merge output over 1 MiB=$largeOutput)",
-    ({ repairs, largeOutput }) => {
-      const fixture = makeToolingRootFixture();
-      const advanced = advanceToolingMain(fixture);
-      if (largeOutput) {
-        // Stands in for a far-behind root's diffstat without checking out
-        // thousands of files; Git sends hook stdout to its stderr.
-        const hooks = join(fixture.root, "tooling-hooks");
-        mkdirSync(hooks);
-        fixture.git(fixture.tooling, ["config", "core.hooksPath", hooks]);
-        writeFileSync(join(hooks, "post-merge"), "#!/bin/sh\nyes x | head -c 1200000\n", {
-          mode: 0o755,
-        });
-      }
-      const target = realpathSync(join(fixture.tooling, "node_modules/tsx"));
-      rmSync(join(fixture.tooling, "node_modules/tsx"));
-      symlinkSync(fixture.stale, join(fixture.tooling, "node_modules/tsx"), "dir");
-      const calls = join(fixture.root, "install-calls");
-      fixture.write(
-        "pnpm",
-        `#!${process.execPath}
+  function makeFrozenDependencyFixture() {
+    const fixture = makeToolingRootFixture();
+    fixture.git(fixture.canonical, ["checkout", "main"]);
+    const markdownManifest = "packages/markdown-core/package.json";
+    mkdirSync(join(fixture.canonical, "packages/markdown-core"), { recursive: true });
+    fixture.write(markdownManifest, readScript(markdownManifest));
+    const inventory = "scripts/pr-lib/wrapper-components.txt";
+    fixture.write(
+      inventory,
+      `${readScript(join(fixture.canonical, inventory))}${markdownManifest}\n`,
+    );
+    fixture.commit([markdownManifest, inventory], true);
+    fixture.git(fixture.canonical, ["fetch", "origin", "main"]);
+    fixture.git(fixture.canonical, ["checkout", "parked"]);
+    const calls = join(fixture.root, "frozen-install-calls");
+    writeFileSync(join(fixture.stale, "package.json"), '{"name":"tsx","version":"99.0.0"}');
+    const expected = realpathSync(join(fixture.tooling, "node_modules/tsx"));
+    // The anchor needs the original package; the shared installation has moved on.
+    rmSync(join(fixture.tooling, "node_modules/tsx"));
+    symlinkSync(fixture.stale, join(fixture.tooling, "node_modules/tsx"), "dir");
+    fixture.write(
+      "pnpm",
+      `#!${process.execPath}
 const fs = require("node:fs");
-fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
-if (${repairs}) {
-  fs.unlinkSync(${JSON.stringify(join(fixture.tooling, "node_modules/tsx"))});
-  fs.symlinkSync(${JSON.stringify(target)}, ${JSON.stringify(join(fixture.tooling, "node_modules/tsx"))}, "dir");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
+const root = args[1];
+if (root === ${JSON.stringify(fixture.tooling)}) process.exit(0);
+fs.cpSync(${JSON.stringify(join(fixture.tooling, "node_modules"))}, path.join(root, "node_modules"), { recursive: true });
+fs.unlinkSync(path.join(root, "node_modules/tsx"));
+fs.symlinkSync(${JSON.stringify(expected)}, path.join(root, "node_modules/tsx"), "dir");
+const workspaceModules = path.join(root, "packages/markdown-core/node_modules");
+fs.mkdirSync(workspaceModules, { recursive: true });
+for (const name of Object.keys(${JSON.stringify(JSON.parse(readScript("packages/markdown-core/package.json")).dependencies)})) {
+  if (!name.startsWith("mdast-") && !name.startsWith("micromark-")) continue;
+  const target = path.join(root, "node_modules/.workspace", name);
+  fs.cpSync(fs.realpathSync(path.join(${JSON.stringify(fixture.tooling)}, "packages/markdown-core/node_modules", name)), target, { recursive: true });
+  fs.symlinkSync(path.relative(workspaceModules, target), path.join(workspaceModules, name), "dir");
+}
+if (process.env.PR_TEST_INSTALL_GATE) {
+  console.log("frozen install ready");
+  const fd = fs.openSync(process.env.PR_TEST_INSTALL_GATE, "r");
+  fs.readSync(fd, Buffer.alloc(1), 0, 1, null);
+  fs.closeSync(fd);
 }
 `,
-        fixture.bin,
-      );
-      const result = fixture.run({ OPENCLAW_PR_TOOLING_ROOT: fixture.tooling });
-      expect(result.status, result.stdout + result.stderr).toBe(repairs ? 2 : 1);
-      // Merge output streams to the operator instead of filling a capture buffer.
-      expect(result.stderr.length).toBeGreaterThan(largeOutput ? 1_200_000 : 0);
-      expect(result.stderr).toContain("has version 0.0.0; the trust anchor requires");
-      expect(result.stderr).toContain(`Refreshing scripts/pr tooling root ${fixture.tooling}`);
-      expect(jsonLines(calls)).toEqual([["-C", fixture.tooling, "install", "--frozen-lockfile"]]);
-      expect(result.stderr).toContain(
-        repairs ? "Refreshed and verified" : "no further refresh was attempted",
-      );
-      expect(fixture.gitText(["rev-parse", "HEAD"], fixture.tooling)).toBe(advanced);
-      expect(realpathSync(join(fixture.canonical, "node_modules/tsx"))).toBe(fixture.stale);
-    },
-  );
+      fixture.bin,
+    );
+    return { ...fixture, calls, expected };
+  }
 
-  itPosix.each(["dirty", "branch"])(
-    "preserves a post-merge hook's %s tooling checkout without installing",
-    (condition) => {
-      const fixture = makeToolingRootFixture();
-      const advanced = advanceToolingMain(fixture);
-      const manifest = join(fixture.tooling, "package.json");
-      const manifestBefore = readScript(manifest);
-      rmSync(join(fixture.tooling, "node_modules/tsx"));
-      symlinkSync(fixture.stale, join(fixture.tooling, "node_modules/tsx"), "dir");
-      const hooks = join(fixture.root, "tooling-hooks");
-      mkdirSync(hooks);
-      fixture.git(fixture.tooling, ["config", "core.hooksPath", hooks]);
-      writeExecutable(
-        join(hooks, "post-merge"),
-        `#!/bin/sh\nset -e\n${condition === "dirty" ? "printf '\\n' >> package.json" : '"$OPENCLAW_PR_GIT" switch -c operator-work'}\n`,
-      );
-      const installed = join(fixture.root, "installed");
-      fixture.write("pnpm", `#!/bin/sh\ntouch '${installed}'\nexit 1\n`, fixture.bin);
-      const result = fixture.run({ OPENCLAW_PR_TOOLING_ROOT: fixture.tooling });
-      const branch = condition === "dirty" ? "main" : "operator-work";
-
-      expect(result.status, result.stdout + result.stderr).toBe(1);
-      expect(result.stderr).toContain(`Cannot refresh scripts/pr tooling root ${fixture.tooling}`);
-      expect(result.stderr).toContain(
-        `branch=${branch}, ${condition === "dirty" ? "dirty" : "clean"}`,
-      );
-      expect(result.stderr).toContain(
-        "Restore its frozen dependencies manually or set OPENCLAW_PR_TOOLING_ROOT",
-      );
-      expect(existsSync(installed)).toBe(false);
-      expect(fixture.gitText(["branch", "--show-current"], fixture.tooling)).toBe(branch);
-      expect(fixture.gitText(["rev-parse", "HEAD"], fixture.tooling)).toBe(advanced);
-      expect(readScript(manifest)).toBe(manifestBefore + (condition === "dirty" ? "\n" : ""));
+  itPosix(
+    "materializes and reuses an older anchor without changing the installed tooling root",
+    () => {
+      const fixture = makeFrozenDependencyFixture();
+      const { calls } = fixture;
+      const before = fixture.gitText(["rev-parse", "HEAD"], fixture.tooling);
+      for (let run = 0; run < 2; run++) {
+        const result = fixture.run(run === 0 ? { OPENCLAW_PR_TOOLING_ROOT: fixture.tooling } : {});
+        expect(result.status, result.stdout + result.stderr).toBe(2);
+        expect(result.stderr).toContain("running wrapper code materialized from");
+      }
+      expect(jsonLines(calls)).toHaveLength(1);
+      const cache = join(fixture.env.HOME!, ".cache/openclaw/pr-dependencies");
+      const entry = readdirSync(cache)[0]!;
+      expect(realpathSync(join(cache, entry, "node_modules/tsx"))).toBe(fixture.expected);
+      expect(existsSync(join(cache, entry, "packages/markdown-core/package.json"))).toBe(true);
+      expect(
+        lstatSync(join(cache, entry, "node_modules/mdast-util-from-markdown"), {
+          throwIfNoEntry: false,
+        }),
+      ).toBeUndefined();
+      expect(jsonLines(calls)[0].slice(2)).toEqual([
+        "install",
+        "--frozen-lockfile",
+        "--prefer-offline",
+      ]);
+      expect(fixture.gitText(["rev-parse", "HEAD"], fixture.tooling)).toBe(before);
       expect(realpathSync(join(fixture.tooling, "node_modules/tsx"))).toBe(fixture.stale);
     },
   );
 
-  itPosix.each(["canonical", "sparse", "unrelated", "subdirectory"])(
+  itPosix("publishes one complete dependency installation when creators overlap", async () => {
+    const fixture = makeFrozenDependencyFixture();
+    const gate = join(fixture.root, "install-gate");
+    expect(runCommand("mkfifo", [gate], fixture.env).status).toBe(0);
+    const start = () => {
+      const child = spawn(join(fixture.linked, "scripts/pr"), ["unknown-command"], {
+        cwd: fixture.linked,
+        env: {
+          ...fixture.env,
+          OPENCLAW_PR_TOOLING_ROOT: fixture.tooling,
+          PR_TEST_INSTALL_GATE: gate,
+        },
+        stdio: "pipe",
+      });
+      let stderr = "";
+      child.stderr.on("data", (data) => {
+        stderr += data;
+      });
+      const ready = new Promise<void>((accept, reject) => {
+        child.stdout.on("data", (data) => {
+          if (String(data).includes("frozen install ready")) {
+            accept();
+          }
+        });
+        child.on("exit", (code) => reject(new Error(`Installer exited ${code}: ${stderr}`)));
+      });
+      return { child, ready, result: once(child, "exit"), errors: () => stderr };
+    };
+    const creators = [start(), start()];
+    try {
+      await Promise.all(creators.map((creator) => creator.ready));
+      await writeFile(gate, "xx");
+      for (const creator of creators) {
+        expect((await creator.result)[0], creator.errors()).toBe(2);
+        expect(creator.errors()).toContain("running wrapper code materialized from");
+      }
+      const cache = join(fixture.env.HOME!, ".cache/openclaw/pr-dependencies");
+      expect(readdirSync(cache)).toHaveLength(1);
+      expect(jsonLines(fixture.calls)).toHaveLength(2);
+      expect(realpathSync(join(cache, readdirSync(cache)[0]!, "node_modules/tsx"))).toBe(
+        fixture.expected,
+      );
+    } finally {
+      for (const creator of creators) {
+        if (creator.child.exitCode === null) {
+          creator.child.kill();
+        }
+      }
+    }
+  });
+
+  itPosix.each(["changed manifest", "extra hook"])(
+    "refuses unverified frozen install source (%s) before package hooks",
+    (fault) => {
+      const fixture = makeFrozenDependencyFixture();
+      writeExecutable(
+        join(fixture.bin, "tar"),
+        `#!/bin/sh
+"$PR_TEST_REAL_TAR" "$@" || exit
+case "$4" in
+  */install-*) ${fault === "changed manifest" ? "printf 'changed manifest' > \"$4/package.json\"" : 'touch "$4/.pnpmfile.cjs"'} ;;
+esac
+`,
+      );
+      const result = fixture.run({
+        OPENCLAW_PR_TOOLING_ROOT: fixture.tooling,
+        PR_TEST_REAL_TAR: resolveCommand("tar"),
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stderr).toContain(
+        fault === "changed manifest"
+          ? "Frozen install source differs: package.json"
+          : "Unexpected frozen install source: .pnpmfile.cjs",
+      );
+      expect(existsSync(fixture.calls)).toBe(false);
+    },
+  );
+
+  itPosix.each(["sparse", "unrelated", "subdirectory"])(
     "refuses an unsafe %s tooling root without installation",
     (condition) => {
       const fixture = makeToolingRootFixture();
       let root = fixture.tooling;
       rmSync(join(fixture.tooling, "node_modules/tsx"));
       symlinkSync(fixture.stale, join(fixture.tooling, "node_modules/tsx"), "dir");
-      if (condition === "canonical") {
-        root = fixture.canonical;
-      }
       if (condition === "sparse") {
         fixture.git(root, ["config", "core.sparseCheckout", "true"]);
       }
@@ -1428,17 +1502,13 @@ if (${repairs}) {
       const result = fixture.run({ OPENCLAW_PR_TOOLING_ROOT: root });
       expect(result.status, result.stdout + result.stderr).toBe(1);
       expect(result.stderr).toContain(root);
-      expect(result.stderr).toContain(
-        ["sparse", "unrelated", "subdirectory"].includes(condition)
-          ? "full Git work tree of this repository"
-          : "Restore its frozen dependencies manually or set OPENCLAW_PR_TOOLING_ROOT",
-      );
+      expect(result.stderr).toContain("full Git work tree of this repository");
       expect(existsSync(installed)).toBe(false);
       expect(result.stderr).not.toContain("running wrapper code materialized from");
     },
   );
 
-  itPosix("does not refresh a tooling root when the materialization destination is invalid", () => {
+  itPosix("does not install dependencies when the materialization destination is invalid", () => {
     const fixture = makeToolingRootFixture();
     writeExecutable(
       join(fixture.bin, "node"),
@@ -1456,7 +1526,7 @@ exec "$OPENCLAW_TEST_NODE" "$@"
       OPENCLAW_TEST_NODE: process.execPath,
     });
     expect(result.status, result.stdout + result.stderr).toBe(1);
-    expect(result.stderr).toContain("tooling root was not refreshed");
+    expect(result.stderr).toContain("Dependency materialization failed");
     expect(existsSync(installed)).toBe(false);
   });
 
@@ -1500,6 +1570,98 @@ echo "canonical wrapper executed";`,
     expect(result.stderr).not.toContain("Refusing to silently substitute");
     const anchors = matchingEntries(fixture.root, "openclaw-pr-anchor.");
     expect(anchors).toHaveLength(0);
+  });
+
+  itPosix.for([
+    { outcome: "success", args: ["ci-dispatch", "123"], exitCode: 0, interrupt: false },
+    { outcome: "failure", args: ["ci-dispatch", "123"], exitCode: 17, interrupt: false },
+    { outcome: "SIGTERM", args: ["ci-dispatch", "123"], exitCode: 143, interrupt: true },
+    { outcome: "unsupervised usage", args: ["unknown-command"], exitCode: 2, interrupt: false },
+  ])(
+    "retires the materialized anchor after $outcome",
+    async ({ args, exitCode, interrupt }, { signal }) => {
+      const fixture = makeMismatchedWrapperRepo({
+        toolingOnly: true,
+        dispatchBody: `mark_pr_operation_side_effects_started || return;
+node -e '
+const { renameSync, writeFileSync } = require("node:fs");
+if (process.env.PR_TEST_INTERRUPT === "1") process.stdin.resume();
+writeFileSync(process.env.PR_TEST_STARTED + ".pending", "operation started\\n");
+renameSync(process.env.PR_TEST_STARTED + ".pending", process.env.PR_TEST_STARTED);
+console.log("operation started");
+if (process.env.PR_TEST_INTERRUPT !== "1") process.exit(Number(process.env.PR_TEST_EXIT));
+';`,
+      });
+      parkCanonicalOffAnchor(fixture);
+      const started = join(fixture.root, "operation-started");
+      const env = {
+        ...fixture.env,
+        PR_TEST_STARTED: started,
+        PR_TEST_EXIT: String(exitCode),
+        PR_TEST_INTERRUPT: interrupt ? "1" : "0",
+      };
+      let result;
+      if (interrupt) {
+        const ready = createDeferred();
+        const child = spawn(join(fixture.linked, "scripts/pr"), args, {
+          cwd: fixture.linked,
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        const completed = once(child, "close");
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8").on("data", (data) => {
+          stdout += data;
+          if (existsSync(started)) {
+            ready.resolve();
+          }
+        });
+        child.stderr.setEncoding("utf8").on("data", (data) => {
+          stderr += data;
+        });
+        try {
+          await withinTest(
+            awaitGateBeforeSettlement(ready.promise, completed, "operation did not start"),
+            signal,
+          );
+          expect(readScript(started)).toBe("operation started\n");
+          expect(child.kill("SIGTERM")).toBe(true);
+          const [status, childSignal] = await withinTest(completed, signal);
+          expect(childSignal).toBeNull();
+          result = { status, stdout, stderr };
+        } finally {
+          child.stdin.end();
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGTERM");
+            await completed;
+          }
+        }
+      } else {
+        result = runWrapper(fixture, args, "linked", { env });
+      }
+      expect(result.status, result.stdout + result.stderr).toBe(exitCode);
+      expect(result.stderr).toContain("running wrapper code materialized from");
+      if (args[0] === "ci-dispatch") {
+        expect(readScript(started)).toBe("operation started\n");
+      }
+      expect(matchingEntries(fixture.root, "openclaw-pr-anchor.")).toEqual([]);
+    },
+  );
+
+  itPosix("retires the materialized anchor when its wrapper exec fails", () => {
+    const fixture = makeMismatchedWrapperRepo({ toolingOnly: true });
+    parkCanonicalOffAnchor(fixture);
+    writeExecutable(
+      join(fixture.bin, "tar"),
+      '#!/bin/sh\n"$PR_TEST_REAL_TAR" "$@" || exit\nchmod -x "$4/scripts/pr"\n',
+    );
+    const result = runWrapper(fixture, ["unknown-command"], "linked", {
+      env: { ...fixture.env, PR_TEST_REAL_TAR: resolveCommand("tar") },
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(matchingEntries(fixture.root, "openclaw-pr-anchor.")).toEqual([]);
+    expect(result.stderr).toContain("Unable to execute the materialized scripts/pr wrapper.");
   });
 
   itPosix("materializes the anchor when tar stops before the producer's trailing padding", () => {
@@ -1692,7 +1854,7 @@ exit 99
         "scripts/lib/anchor-review-record.mjs",
         "throw new Error('unreviewed dependency');\n",
       );
-      const anchor = materializeAnchor(fixture);
+      const { anchor } = materializeAnchor(fixture);
       fixture.write("gh", "#!/bin/sh\necho forbidden-gh >&2\nexit 99\n", fixture.bin);
       writeReviewArtifacts(fixture.linked, validReview());
       const result = runCommand(
@@ -1727,7 +1889,7 @@ exit 99
     () => {
       const fixture = makeMismatchedWrapperRepo({ realModules: true });
       parkCanonicalOffAnchor(fixture);
-      const anchor = materializeAnchor(fixture);
+      const { anchor } = materializeAnchor(fixture);
       fixture.write("gh", "#!/bin/sh\necho forbidden-gh >&2\nexit 99\n", fixture.bin);
       const nodeExecPath = requireNodeTool("node");
       const run = (args: string[]) => runCommand(nodeExecPath, args, fixture.env, anchor);

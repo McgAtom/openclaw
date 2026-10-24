@@ -11,7 +11,8 @@ import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as schedule from "../schedule.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
-import type { CronJob } from "../types.js";
+import type { CronJob, CronStoredJob } from "../types.js";
+import { resolveCronWatchdogFailure } from "./execution-errors.js";
 import { needsCronTimerMaintenance, resolveJobErrorBackoffUntilMs } from "./jobs-scheduling.js";
 import type { CronServiceDeps, DeferredCronNotifications } from "./state.js";
 import { runPostPersistCronNotifications } from "./store.js";
@@ -24,7 +25,7 @@ const startedAt = Date.parse("2026-10-05T00:00:00.000Z");
 
 function outcomeFixture(
   runAt: number,
-  overrides: Partial<CronJob> = {},
+  overrides: Partial<CronStoredJob> = {},
   deps: Partial<Parameters<typeof createCronServiceState>[0]> = {},
 ) {
   const job = {
@@ -57,6 +58,76 @@ function outcomeFixture(
     );
   return { state, job, apply, deferredNotifications };
 }
+
+it.each(["execution_deadline", "semantic_stall"] as const)(
+  "keeps a recurring operator source scheduled after %s without replaying a one-shot",
+  (reason) => {
+    const operatorSource: NonNullable<CronStoredJob["operatorSource"]> = {
+      executionRevision: "fixture-execution",
+      source: {
+        version: 1,
+        agentId: "main",
+        sessionKey: "agent:main:continuation",
+        sessionId: "source-session",
+        sourceRunId: "creator-run",
+        snapshot: {
+          profileId: "fixture-operator",
+          scopes: ["operator.write"],
+          assignedRole: null,
+          githubLogin: null,
+          grant: null,
+          aliasBindingIds: [],
+          authPolicy: {
+            generation: "",
+            grantGeneration: "fixture-generation",
+            role: "operator",
+            authMethod: "token",
+          },
+          controlUiAdmin: true,
+          localOperator: false,
+          sourceIngress: "control-ui",
+        },
+      },
+    };
+    const controller = new AbortController();
+    controller.abort(
+      Object.assign(new Error("private watchdog diagnostics"), {
+        code: "OPENCLAW_SESSION_WATCHDOG",
+        cause: reason,
+      }),
+    );
+    const failure = resolveCronWatchdogFailure(controller.signal);
+    expect(failure).toBeDefined();
+    const recurring = outcomeFixture(startedAt, { operatorSource });
+    recurring.apply({ status: "error", executionStarted: true, ...failure });
+
+    expect(recurring.job.enabled).toBe(true);
+    expect(recurring.job.state.nextRunAtMs).toBe(startedAt + 60_000);
+    expect(isRunnableJob({ job: recurring.job, nowMs: startedAt + 60_000 })).toBe(true);
+    expect(recurring.job.operatorSource).toEqual(operatorSource);
+    expect(recurring.job.state.lastErrorReason).toBeUndefined();
+    expect(recurring.job.state.consecutiveErrors).toBe(1);
+
+    const oneShot = outcomeFixture(startedAt, {
+      operatorSource,
+      schedule: { kind: "at", at: new Date(startedAt).toISOString() },
+    });
+    oneShot.apply({ status: "error", executionStarted: true, ...failure });
+    expect(oneShot.job.enabled).toBe(false);
+    expect(oneShot.job.state.nextRunAtMs).toBeUndefined();
+
+    // Source restoration failures still retire a recurring continuation.
+    const retired = outcomeFixture(startedAt, { operatorSource });
+    retired.apply({
+      status: "error",
+      error: "Stored operator source is unavailable",
+      executionStarted: false,
+      errorClassification: { kind: "permanent" },
+    });
+    expect(retired.job.enabled).toBe(false);
+    expect(retired.job.state.nextRunAtMs).toBeUndefined();
+  },
+);
 
 it.each([false, true])("never invents an event retry slot during outcome replay=%s", (replay) => {
   const { job, apply } = outcomeFixture(startedAt, {

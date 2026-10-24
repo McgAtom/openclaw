@@ -1,6 +1,12 @@
+import { resolveAgentRunErrorLifecycleFields } from "../../agents/run-termination.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { createCronRunDiagnosticsFromAgentResult } from "../../cron/run-diagnostics.js";
+import {
+  createCronRunDiagnosticsFromAgentResult,
+  createCronRunDiagnosticsFromError,
+  mergeCronRunDiagnostics,
+} from "../../cron/run-diagnostics.js";
 import { projectCronRunUsage } from "../../cron/run-telemetry.js";
+import { resolveCronWatchdogFailure } from "../../cron/service/execution-errors.js";
 import { consumeCronNextCheckProposal } from "../../infra/agent-run-registry.automation.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -179,5 +185,40 @@ export async function settleSessionAutomationTurn(params: {
         finalStatus: params.outcome === "completed" ? "ok" : "error",
       }),
     },
+  };
+}
+
+/** Project terminal facts without reacquiring admission after a controller-owned stop. */
+export function resolveSessionEventTerminalOutcome(params: {
+  failure?: Error | string;
+  signal: AbortSignal;
+  operationSignal?: AbortSignal;
+  automation?: ScheduledSessionAutomation;
+  automationResult?: SessionEventOutcome["automationResult"];
+}): Pick<SessionEventOutcome, "status" | "error" | "interruptedByRestart" | "automationResult"> {
+  const interruptedByRestart =
+    resolveAgentRunErrorLifecycleFields(params.failure, params.operationSignal ?? params.signal)
+      .stopReason === "restart";
+  const watchdog =
+    params.automation && !params.signal.aborted && !interruptedByRestart
+      ? resolveCronWatchdogFailure(params.operationSignal)
+      : undefined;
+  const error = watchdog?.error ?? (params.failure ? String(params.failure) : undefined);
+  const status = params.signal.aborted ? "cancelled" : error ? "failed" : "completed";
+  return {
+    status,
+    ...(error ? { error } : {}),
+    interruptedByRestart: status !== "completed" && interruptedByRestart,
+    automationResult: watchdog
+      ? {
+          ...params.automationResult,
+          errorClassification: watchdog.errorClassification,
+          failureNotificationDetail: watchdog.failureNotificationDetail,
+          diagnostics: mergeCronRunDiagnostics(
+            params.automationResult?.diagnostics,
+            createCronRunDiagnosticsFromError("agent-run", watchdog.error),
+          ),
+        }
+      : params.automationResult,
   };
 }

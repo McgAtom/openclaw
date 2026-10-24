@@ -1,7 +1,6 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { isAgentDeletionBlocked } from "../../agents/agent-lifecycle-registry.js";
 import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
-import { resolveAgentRunErrorLifecycleFields } from "../../agents/run-termination.js";
 import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { SessionWorkStartError } from "../../config/sessions/session-work-start.js";
@@ -31,6 +30,7 @@ import {
   prepareCronRunContinuationCleanup,
   prepareScheduledAutomationStart,
   resolveScheduledSessionReplyOptions,
+  resolveSessionEventTerminalOutcome,
   settleSessionAutomationTurn,
   type ScheduledAutomationAdmission,
 } from "./session-event-automation.js";
@@ -321,14 +321,20 @@ export function enqueueSessionEventForHost(
         configPublicationChanged && !started && !deliveryAttempted && !signal.aborted && !abandoned;
       const attempt = options.readmissionAttempt ?? 0;
       const canReadmit = configChangeRetention && attempt < MAX_CONFIG_READMISSION_ATTEMPTS;
-      const status = signal.aborted ? "cancelled" : failure ? "failed" : "completed";
-      if (status === "failed" && !canReadmit) {
+      const terminal = resolveSessionEventTerminalOutcome({
+        failure,
+        signal,
+        operationSignal: operation?.abortSignal,
+        automation: options.scheduledAutomation,
+        automationResult,
+      });
+      if (terminal.status === "failed" && !canReadmit) {
         log.error("session event execution failed", {
           source: options.source,
           agentId,
           sessionKey,
           eventId: occurrenceId,
-          error: String(failure),
+          error: terminal.error,
         });
       }
       signal.removeEventListener("abort", onAbort);
@@ -389,12 +395,8 @@ export function enqueueSessionEventForHost(
         return;
       }
       resolve({
-        status,
+        ...terminal,
         executionStarted: started,
-        interruptedByRestart:
-          status !== "completed" &&
-          resolveAgentRunErrorLifecycleFields(failure, operation?.abortSignal ?? signal)
-            .stopReason === "restart",
         delivered,
         deliveryAttempted,
         deliveryAmbiguous,
@@ -409,8 +411,6 @@ export function enqueueSessionEventForHost(
         summary,
         nextCheckMs,
         sourceDeliveryOutcome,
-        automationResult,
-        ...(failure ? { error: String(failure) } : {}),
         ...(failure instanceof SessionWorkStartError ? { retryable: failure.retryable } : {}),
       });
       cleanupContinuation?.();

@@ -61,6 +61,10 @@ export function continueStalledReplyTurn({
   runFollowupTurn: FinalizeReplyAgentRunInput["runFollowupTurn"];
   guidance?: string;
 }): boolean {
+  // Cron owns retry policy; generic feedback recovery could repeat tool actions.
+  if (followupRun.run.scheduledAutomation) {
+    return false;
+  }
   // Preflight can stall before admission persists the request. Transcript-only
   // recovery cannot answer that input; leave its notice with dispatch.
   if (

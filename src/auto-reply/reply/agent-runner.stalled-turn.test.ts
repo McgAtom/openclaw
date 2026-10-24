@@ -10,6 +10,8 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { makeCronJob } from "../../cron/delivery.test-helpers.js";
+import { TEST_SCHEDULED_TURN } from "../../cron/scheduled-occurrence.test-support.js";
 import { createChatSendLateFollowupDisposition } from "../../gateway/server-methods/chat-send-late-followup.js";
 import { createChatSendLateReplyFinalizer } from "../../gateway/server-methods/chat-send-source-finalization.js";
 import { createGatewayRequestContext } from "../../gateway/server-request-context.js";
@@ -25,6 +27,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
 } from "../../state/openclaw-agent-db.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { WorkerNodeLostError } from "../../worker/worker-node-loss.js";
 import type { TemplateContext } from "../templating.js";
 import type * as AgentRunnerExecution from "./agent-runner-execution.js";
@@ -107,6 +110,7 @@ const settings: QueueSettings = { mode: "followup", debounceMs: 0 };
 
 async function createStalledRun(
   options: {
+    scheduledAutomation?: boolean;
     operatorAuthority?: AdmittedRunOperatorAuthority;
     queuedFollowupReplyDisposition?: FollowupRun["queuedFollowupReplyDisposition"];
     originatingChannel?: string;
@@ -124,6 +128,16 @@ async function createStalledRun(
   followupRun.operatorAuthority = options.operatorAuthority;
   followupRun.queuedFollowupReplyDisposition = options.queuedFollowupReplyDisposition;
   followupRun.run.skillLibraryAuthoring = options.skillLibraryAuthoring;
+  if (options.scheduledAutomation) {
+    followupRun.run.scheduledAutomation = {
+      ...TEST_SCHEDULED_TURN,
+      job: makeCronJob({ sessionTarget: `session:${queueKey}`, delivery: { mode: "none" } }),
+    };
+    followupRun.originatingChannel = undefined;
+    followupRun.originatingTo = undefined;
+    followupRun.run.messageProvider = INTERNAL_MESSAGE_CHANNEL;
+    followupRun.run.inputProvenance = { kind: "internal_system", sourceTool: "cron" };
+  }
   followupRun.images = [{ type: "image", data: "aW1n", mimeType: "image/png" }];
   followupRun.transcriptPrompt = "what is good at the hotel restaurant?";
   const transcriptTarget = createSqliteTranscriptTarget({
@@ -139,6 +153,10 @@ async function createStalledRun(
     input: { text: followupRun.transcriptPrompt },
     target: transcriptTarget,
   });
+  if (options.scheduledAutomation) {
+    // The mocked executor does not run the native writer that commits scheduled input.
+    await recorder.persistApproved();
+  }
   followupRun.userTurnTranscriptRecorder = recorder;
   const admitted = await admitReplyTurn({
     ...transcriptTarget,
@@ -169,9 +187,9 @@ async function createStalledRun(
     },
     typing: createMockTypingController(),
     sessionCtx: {
-      Provider: "telegram",
-      OriginatingChannel: "telegram",
-      OriginatingTo: "12345",
+      Provider: options.scheduledAutomation ? INTERNAL_MESSAGE_CHANNEL : "telegram",
+      OriginatingChannel: options.scheduledAutomation ? undefined : "telegram",
+      OriginatingTo: options.scheduledAutomation ? undefined : "12345",
       ChatType: "direct",
       MessageSid: "msg-stalled",
     } as unknown as TemplateContext,
@@ -285,6 +303,39 @@ describe("runReplyAgent stalled turn continuation", () => {
     expect(recovery?.prompt).toContain("previous turn stopped making progress");
     await expectTranscriptOnlyRecovery(stalled, recovery);
   });
+
+  it.each([false, true])(
+    "does not replay a stalled scheduled turn or adopt newer input (queued=%s)",
+    async (hasQueuedInput) => {
+      const stalled = await createStalledRun({ scheduledAutomation: true });
+      const queued = hasQueuedInput
+        ? createQueuedRequest(stalled, { senderId: "traveler", to: "12345" })
+        : undefined;
+      if (queued) {
+        expect(
+          enqueueFollowupRun(queueKey, queued, settings, "message-id", drainedRuns, false),
+        ).toBe(true);
+      }
+      await stallBeforeOutput(stalled);
+
+      try {
+        expect(stalled.recorder.hasPersisted()).toBe(true);
+        expect(stalled.runState.continueStalledTurn?.()).toBe(false);
+        expect(getFollowupQueueDepth(queueKey)).toBe(hasQueuedInput ? 1 : 0);
+        expect(queued?.stalledTurnRecovery).toBeUndefined();
+        expect(queued?.currentInboundContext).toBeUndefined();
+      } finally {
+        await settleStalledOwner(stalled);
+      }
+      if (queued) {
+        await vi.waitFor(() => expect(drainedRuns).toHaveBeenCalledExactlyOnceWith(queued));
+      } else {
+        expect(drainedRuns).not.toHaveBeenCalled();
+      }
+      expect(executeAgentTurnMock).toHaveBeenCalledOnce();
+      expect(getFollowupQueueDepth(queueKey)).toBe(0);
+    },
+  );
 
   it.each(["followup", "collect"] as const)(
     "sends one last-resort notice when the claimed %s request also stalls",

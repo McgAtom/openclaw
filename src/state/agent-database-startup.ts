@@ -10,6 +10,7 @@ import {
   getOrLoadSqliteDatabaseAdmissionForPath,
   prepareSqliteDatabaseAdmission,
 } from "../infra/sqlite-database-admission.js";
+import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
 import { readSqliteIntegrityFileIdentity } from "../infra/sqlite-file-generation.js";
 import { withSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
 import { schemaAdmission } from "../infra/sqlite-schema-admission.js";
@@ -520,7 +521,38 @@ class AgentDatabaseStartupAdmission {
                   assertCurrent,
                   phase,
                 };
-                await retryAsync(
+                const retryPreparation = async (
+                  run: () => Promise<void>,
+                  shouldRetry = isSqliteLockError,
+                ) => {
+                  let preparationAttempts = 0;
+                  await retryAsync(
+                    async () => {
+                      if (preparationAttempts++ > 0) {
+                        await assertNotDeleted();
+                      }
+                      assertCurrent();
+                      await run();
+                    },
+                    {
+                      ...capacityRetry,
+                      // Mixed cleanup failures and uncertain outcomes must not replay preparation.
+                      shouldRetry,
+                      onRetry: ({ attempt, err }) =>
+                        log.warn(
+                          isSqliteLockError(err)
+                            ? "agent database startup locked; retrying preparation"
+                            : "agent database startup capacity reached; retrying preparation",
+                          {
+                            agentId,
+                            phase: recovery.phase,
+                            attempt,
+                          },
+                        ),
+                    },
+                  );
+                };
+                await retryPreparation(
                   async () => {
                     phase("open-wait");
                     const release = await this.opening.acquire({ signal: this.signal });
@@ -535,21 +567,20 @@ class AgentDatabaseStartupAdmission {
                       release?.();
                     }
                   },
-                  {
-                    ...capacityRetry,
-                    shouldRetry: (error) => isSqliteWorkerError(error, "overloaded"),
-                  },
+                  (error) => isSqliteLockError(error) || isSqliteWorkerError(error, "overloaded"),
                 );
-                phase("migration-wait");
-                const releaseMigration = await this.migrating.acquire({ signal: this.signal });
-                try {
-                  assertCurrent();
-                  phase("migration");
-                  const migrated = await activation.migrateAgent(input);
-                  preparation.maintenance = migrated ? migrated.maintain : undefined;
-                } finally {
-                  releaseMigration?.();
-                }
+                await retryPreparation(async () => {
+                  phase("migration-wait");
+                  const releaseMigration = await this.migrating.acquire({ signal: this.signal });
+                  try {
+                    assertCurrent();
+                    phase("migration");
+                    const migrated = await activation.migrateAgent(input);
+                    preparation.maintenance = migrated ? migrated.maintain : undefined;
+                  } finally {
+                    releaseMigration?.();
+                  }
+                });
                 // Keep the revision until admission publishes after its final journal check.
                 phase("publication-wait");
                 const previous = this.publication;

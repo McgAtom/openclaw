@@ -21,8 +21,8 @@ import {
   createCronRunDiagnosticsFromError,
   mergeCronRunDiagnostics,
 } from "../run-diagnostics.js";
-import type { CronWatchdogFailure } from "../service/execution-errors.js";
 import type { CronDeliveryTrace, CronRunTelemetry } from "../types.js";
+import type { CronWatchdogFailure } from "../watchdog-failure.js";
 import { resolveCronChannelOutputPolicy } from "./channel-output-policy.js";
 import type { DispatchCronDeliveryState } from "./delivery-dispatch-types.js";
 import { resolveCronPayloadOutcome } from "./helpers.js";

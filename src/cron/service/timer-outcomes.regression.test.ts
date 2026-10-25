@@ -12,7 +12,7 @@ import * as schedule from "../schedule.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import type { CronJob, CronStoredJob } from "../types.js";
-import { resolveCronWatchdogFailure } from "./execution-errors.js";
+import { resolveCronWatchdogFailure } from "../watchdog-failure.js";
 import { needsCronTimerMaintenance, resolveJobErrorBackoffUntilMs } from "./jobs-scheduling.js";
 import type { CronServiceDeps, DeferredCronNotifications } from "./state.js";
 import { runPostPersistCronNotifications } from "./store.js";

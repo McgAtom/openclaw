@@ -46,10 +46,10 @@ import { resolveCronRunErrorReason } from "../run-error-reason.js";
 import {
   normalizeCronRunErrorText,
   resolveCronAbortReasonText,
-  resolveCronWatchdogFailure,
 } from "../service/execution-errors.js";
 import { isCronOneShotContinuationJob } from "../service/one-shot-schedule.js";
 import type { CronAgentExecutionPhaseUpdate } from "../types.js";
+import { resolveCronWatchdogFailure } from "../watchdog-failure.js";
 import { resolveCronActiveRuntimeConfig } from "./run-config.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
 import { finalizeCronRun } from "./run-finalize.js";

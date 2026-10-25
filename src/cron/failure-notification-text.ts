@@ -1,5 +1,6 @@
 import type { FailoverReason } from "../agents/failover/signal.js";
 import type { CronFailureNotificationDetail, CronTriggerFailureCode } from "./types.js";
+import { formatCronWatchdogFailure } from "./watchdog-failure.js";
 
 const GENERIC_FAILURE_DETAIL = "Check automation history for details.";
 
@@ -13,15 +14,6 @@ const SCRIPT_FAILURE_COPY = {
   internal_error: "failed internally",
   tool_budget_exceeded: "exceeded its tool budget",
 } satisfies Record<Exclude<CronTriggerFailureCode, "plugin_reload_failed">, string>;
-
-/** Fixed copy shared by run history and the safe chat notification projection. */
-export function formatCronWatchdogFailure(
-  reason: Extract<CronFailureNotificationDetail, { kind: "agent-watchdog" }>["reason"],
-): string {
-  return reason === "execution_deadline"
-    ? "Session watchdog stopped the run after its execution deadline."
-    : "Session watchdog stopped the run after no semantic progress.";
-}
 
 /** Renders only classified reasons or closed producer-authored failure facts. */
 export function cronFailureDetailLines(

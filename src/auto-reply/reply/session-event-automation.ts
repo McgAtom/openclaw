@@ -7,7 +7,7 @@ import {
   mergeCronRunDiagnostics,
 } from "../../cron/run-diagnostics.js";
 import { projectCronRunUsage } from "../../cron/run-telemetry.js";
-import { resolveCronWatchdogFailure } from "../../cron/service/execution-errors.js";
+import { resolveCronWatchdogFailure } from "../../cron/watchdog-failure.js";
 import { consumeCronNextCheckProposal } from "../../infra/agent-run-registry.automation.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";

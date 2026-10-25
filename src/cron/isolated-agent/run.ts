@@ -50,7 +50,6 @@ import {
 } from "../service/execution-errors.js";
 import { isCronOneShotContinuationJob } from "../service/one-shot-schedule.js";
 import type { CronAgentExecutionPhaseUpdate } from "../types.js";
-import { persistCronAutomationResult } from "./run-automation-context.js";
 import { resolveCronActiveRuntimeConfig } from "./run-config.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
 import { finalizeCronRun } from "./run-finalize.js";
@@ -446,18 +445,6 @@ async function runCronIsolatedAgentTurnInTrace(
               if (automationRun) {
                 automationRun.closed = true;
               }
-              await persistCronAutomationResult({
-                cfg: prepared.context.cfgWithAgentDefaults,
-                job: params.job,
-                runId,
-                result: automationResult,
-                resultTarget: prepared.context.resultTarget,
-                agentId: prepared.context.agentId,
-                runSessionKey: prepared.context.runSessionKey,
-                runSessionId: prepared.context.currentRunSessionId(),
-                storePath: prepared.context.cronSession.storePath,
-                assertCurrent: assertInvocationCurrent,
-              });
               const finalized = await finalizeCronRun({
                 automationResult,
                 prepared: prepared.context,

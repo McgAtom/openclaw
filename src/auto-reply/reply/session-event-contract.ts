@@ -49,7 +49,11 @@ export type SessionEventOutcome = {
   automationResult?: CronRunTelemetry &
     Pick<
       CronRunOutcome,
-      "replyDisposition" | "diagnostics" | "errorClassification" | "failureNotificationDetail"
+      | "replyDisposition"
+      | "diagnostics"
+      | "result"
+      | "errorClassification"
+      | "failureNotificationDetail"
     >;
   /** Recorded controller restart outcome, before the error is flattened. */
   interruptedByRestart?: boolean;

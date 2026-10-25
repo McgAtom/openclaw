@@ -321,22 +321,6 @@ export function enqueueSessionEventForHost(
         configPublicationChanged && !started && !deliveryAttempted && !signal.aborted && !abandoned;
       const attempt = options.readmissionAttempt ?? 0;
       const canReadmit = configChangeRetention && attempt < MAX_CONFIG_READMISSION_ATTEMPTS;
-      const terminal = resolveSessionEventTerminalOutcome({
-        failure,
-        signal,
-        operationSignal: operation?.abortSignal,
-        automation: options.scheduledAutomation,
-        automationResult,
-      });
-      if (terminal.status === "failed" && !canReadmit) {
-        log.error("session event execution failed", {
-          source: options.source,
-          agentId,
-          sessionKey,
-          eventId: occurrenceId,
-          error: terminal.error,
-        });
-      }
       signal.removeEventListener("abort", onAbort);
       generationLease?.release();
       if (canReadmit) {
@@ -375,10 +359,31 @@ export function enqueueSessionEventForHost(
             error: String(failure),
           });
         }
-      } else if (options.preserveOccurrenceOnRejection && !adopted && !started) {
-        ownership.release();
-      } else {
-        ownership.cancel();
+      }
+      // Re-admission may replace the failure; project it before releasing custody
+      // can abort the signal of an otherwise failed or completed occurrence.
+      const terminal = resolveSessionEventTerminalOutcome({
+        failure,
+        signal,
+        operationSignal: operation?.abortSignal,
+        automation: options.scheduledAutomation,
+        automationResult,
+      });
+      if (terminal.status === "failed" && !canReadmit) {
+        log.error("session event execution failed", {
+          source: options.source,
+          agentId,
+          sessionKey,
+          eventId: occurrenceId,
+          error: terminal.error,
+        });
+      }
+      if (!canReadmit) {
+        if (options.preserveOccurrenceOnRejection && !adopted && !started) {
+          ownership.release();
+        } else {
+          ownership.cancel();
+        }
       }
       releaseOperatorAuthority?.();
       releaseOperatorAuthority = undefined;

@@ -226,18 +226,14 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
     return new Error(value);
   }
   const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    for (const key of Reflect.ownKeys(value)) {
-      if (!Reflect.getOwnPropertyDescriptor(value, key)?.enumerable) {
-        continue;
-      }
-      // Preserve getter order and failures, but never call the prototype setter.
-      const detail = Reflect.get(value, key);
-      if (key !== "__proto__") {
-        Object.assign(error, { [key]: detail });
-      }
-    }
-  }
+  // Keep native assignment semantics while blocking the prototype setter.
+  Object.assign(
+    new Proxy(error, {
+      set: (target, key, detail: unknown) =>
+        key === "__proto__" || Reflect.set(target, key, detail),
+    }),
+    value,
+  );
   return error;
 }
 

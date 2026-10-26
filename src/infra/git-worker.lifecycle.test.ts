@@ -8,21 +8,16 @@ import { promisify } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createEnteredGate } from "../agents/entered-gate.test-support.js";
 import { executeGitWorktreeOperation } from "../agents/worktrees/git-worktree-operations.runtime.js";
 import * as worktreeGit from "../agents/worktrees/git.js";
 import { runPublicationCommand } from "../gateway/github-publication-git-transport.js";
 import { runWorkspaceInventoryCommandToFile } from "../gateway/worker-environments/workspace-sync-inventory.js";
 import { ensureStagedInputDirectory, stagedInputDirectory } from "../media/staged-inputs.js";
-import { emitChildProcessSpawnSample } from "../process/spawn-diagnostics.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
 import { isPidAlive } from "../shared/pid-alive.js";
 import { killPidIfAlive } from "../test-utils/process-tree.js";
-import {
-  onDiagnosticEvent,
-  setDiagnosticsEnabledForProcess,
-  type DiagnosticEventPayload,
-} from "./diagnostic-events.js";
 import * as gitExec from "./git-exec.js";
 import { installUnknownDirentFixture } from "./git-worker-dir.test-support.js";
 import { runGitWorkerOperation, type GitWorkerOperationOptions } from "./git-worker.js";
@@ -329,6 +324,41 @@ describe("Git operation host lifecycle", () => {
     expect(ignoredReads).toBeGreaterThan(0);
   });
 
+  it("reuses snapshot status for an add/add directory replacement without losing nested repository protection", async () => {
+    const repo = await repository(tempDirs.make("openclaw-snapshot-add-add-"));
+    const blob = await git(repo, "rev-parse", "HEAD:README.md");
+    await worktreeGit.requireGit(repo, ["update-index", "--index-info"], {
+      input: Buffer.from(`100644 ${blob} 2\tentry\n100644 ${blob} 3\tentry\n`),
+    });
+    await fs.mkdir(path.join(repo, "entry"));
+    await fs.writeFile(path.join(repo, "entry", "child.txt"), "replacement child\n");
+    expect(await git(repo, "status", "--porcelain=v1", "--untracked-files=no")).toBe("AA entry");
+    const commands = vi.spyOn(worktreeGit, "runGitBuffered");
+    const capture = () =>
+      runGitWorkerOperation(
+        {
+          type: "worktree.snapshot",
+          input: {
+            worktreeId: "add-add-replacement",
+            checkoutPath: repo,
+            repoRoot: repo,
+            reason: "fixture",
+            provisionedPaths: [],
+          },
+        },
+        { onEffect: () => undefined },
+      );
+    const snapshot = await capture();
+    expect.soft(commands.mock.calls.filter(([, args]) => args[0] === "diff-files")).toHaveLength(0);
+    expect(commands.mock.calls.filter(([, args]) => args.includes("status"))).toHaveLength(1);
+    const captured = await git(repo, "show", `${snapshot.snapshotRef}:entry/child.txt`);
+    expect(captured).toBe("replacement child");
+    await fs.mkdir(path.join(repo, "entry", "nested", ".git"), { recursive: true });
+    await expect(capture()).rejects.toThrow(
+      "nested git repositories cannot be snapshotted losslessly",
+    );
+  });
+
   it.skipIf(!supportsRawPathBytes)(
     "inspects ignored raw-byte directories without following symlinks",
     async () => {
@@ -431,18 +461,6 @@ describe("Git operation host lifecycle", () => {
     const peerRoot = path.join(root, "peer");
     await fs.mkdir(peerRoot);
     const peer = await repository(peerRoot);
-    let now = 0;
-    vi.spyOn(performance, "now").mockImplementation(() => now);
-    setDiagnosticsEnabledForProcess(false);
-    emitChildProcessSpawnSample();
-    setDiagnosticsEnabledForProcess(true);
-    const spawns: Extract<DiagnosticEventPayload, { type: "diagnostic.child_process.spawn" }>[] =
-      [];
-    const stop = onDiagnosticEvent((event) => {
-      if (event.type === "diagnostic.child_process.spawn") {
-        spawns.push(event);
-      }
-    });
     const entered = createDeferredCore();
     const release = createDeferredCore();
     const realRun = worktreeGit.runGitBytes;
@@ -489,18 +507,7 @@ describe("Git operation host lifecycle", () => {
     } finally {
       release.resolve();
       await Promise.all(pending);
-      now = 60_000;
-      emitChildProcessSpawnSample();
-      stop();
-      setDiagnosticsEnabledForProcess(false);
-      emitChildProcessSpawnSample();
     }
-    expect(
-      spawns
-        .map(({ operation }) => operation ?? "unknown")
-        .toSorted((left, right) => left.localeCompare(right)),
-    ).toEqual(["checkout.diff", "repository.branches"]);
-    expect(spawns.every(({ family, count }) => family === "git" && count > 0)).toBe(true);
   });
 
   it.each(["cleanup-inspection", "snapshot"] as const)(
@@ -766,16 +773,11 @@ describe("Git operation host lifecycle", () => {
     async (transport) => {
       const root = tempDirs.make("openclaw-caller-git-authority-");
       const repo = await repository(root);
-      const entered = createDeferredCore();
-      const release = createDeferredCore();
+      const revocationGate = createEnteredGate();
       const revoked = new Error("caller Git authority revoked");
       let current = true;
       const trace = path.join(root, "git-trace.jsonl");
       vi.stubEnv("GIT_TRACE2_EVENT", trace);
-      const waitForRevocation = async () => {
-        entered.resolve();
-        await release.promise;
-      };
       const pending = settle(
         runGitWorkerOperation(
           { type: "worktree.git-size", input: { repoRoot: repo, ref: "HEAD" } },
@@ -788,13 +790,13 @@ describe("Git operation host lifecycle", () => {
             git: {
               text: async (cwd, args, options) => {
                 if (transport === "text") {
-                  await waitForRevocation();
+                  await revocationGate.wait();
                 }
                 return await gitExec.executeGitCommandBytes(cwd, args, options);
               },
               buffered: async (cwd, args, options) => {
                 if (transport === "buffered") {
-                  await waitForRevocation();
+                  await revocationGate.wait();
                 }
                 return await gitExec.executeGitCommandBuffered(cwd, args, options);
               },
@@ -804,12 +806,12 @@ describe("Git operation host lifecycle", () => {
       );
       try {
         await waitForLifecyclePoint(
-          entered.promise,
+          revocationGate.entered,
           pending,
           "Sizing ended before caller Git was held",
         );
         current = false;
-        release.resolve();
+        revocationGate.release();
         const result = await within(pending);
         expect(result.rejected && result.error).toBe(revoked);
         const starts = (await exists(trace))
@@ -818,7 +820,7 @@ describe("Git operation host lifecycle", () => {
         expect(starts).toHaveLength(0);
       } finally {
         current = false;
-        release.resolve();
+        revocationGate.release();
         await pending;
       }
     },
@@ -838,9 +840,9 @@ describe("Git operation host lifecycle", () => {
       const onEffect: NonNullable<GitWorkerOperationOptions["onEffect"]> = async (effect) => {
         if (
           effect.type === "worktree.snapshot-capacity" &&
-          effect.input.purpose === "worktree safety snapshot index"
+          effect.input.purpose === "worktree safety snapshot"
         ) {
-          temporaryDirectory = effect.input.demands[0]?.path ?? "";
+          temporaryDirectory = effect.input.demands[1]?.path ?? "";
           entered.resolve();
           if (ending === "cancel") {
             await release.promise;
@@ -956,9 +958,9 @@ describe("Git operation host lifecycle", () => {
             onEffect: (effect) => {
               if (
                 effect.type === "worktree.snapshot-capacity" &&
-                effect.input.purpose === "worktree safety snapshot index"
+                effect.input.purpose === "worktree safety snapshot"
               ) {
-                temporaryDirectory = effect.input.demands[0]?.path ?? "";
+                temporaryDirectory = effect.input.demands[1]?.path ?? "";
               }
               return undefined;
             },

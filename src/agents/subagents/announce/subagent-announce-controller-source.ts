@@ -5,6 +5,7 @@ import {
   hasRestartRecoverySourceClaim,
   hasRestartRecoveryTerminalRun,
 } from "../../../config/sessions/restart-recovery-state.js";
+import { isRestartRecoveryTombstone } from "../../../config/sessions/session-work-start.js";
 import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import {
   getGatewayContextResolver,
@@ -32,6 +33,11 @@ import {
 } from "../registry/subagent-requester-settle-identity.js";
 import { captureRequesterFollowupContinuationCaller } from "../requester-cron-authority.js";
 import { loadRequesterSessionEntry } from "./subagent-announce-delivery.runtime.js";
+import { createRequesterDescendantReader } from "./subagent-announce.requester-settle-descendants.js";
+import {
+  isRequesterSettleMemberReady,
+  waitForRequesterDescendants,
+} from "./subagent-announce.requester-settle-state.js";
 
 /** Recovery already owns this exact input; the wake only reconciles its final receipt. */
 export function resolveRequesterSettleRecoveryCustody(
@@ -106,6 +112,10 @@ export async function reserveSubagentControllerSource(
   const { resolvePrivateRequesterSettleRecoveryOwner } =
     await import("../registry/subagent-registry-restart-recovery.js");
   const privateOwner = resolvePrivateRequesterSettleRecoveryOwner(requester, privateSourceRunId);
+  // Unadmitted completions must not occupy the mailbox ahead of an operator's Resume.
+  if (privateOwner !== "owned" && isRestartRecoveryTombstone(requester.entry)) {
+    return undefined;
+  }
   // Recover the interrupted requester before another completion wave reserves its mailbox.
   // An exact recovered receipt may still reconcile without starting replacement work.
   if (
@@ -204,6 +214,11 @@ export async function reserveRestoredSubagentControllerSources(
     batch: readonly SubagentRunRecord[],
     wake: NonNullable<SubagentRunRecord["requesterSettleWake"]>,
   ) => {
+    const pause = batch[0]?.pauseReason === "sessions_yield" && wake.pauseNotice !== undefined;
+    // Unsettled work is not yet a runnable input and must not hold foreground FIFO.
+    if (!pause && !batch.every(isRequesterSettleMemberReady)) {
+      return undefined;
+    }
     // Keep the full frozen cohort's custody, but never park the requester behind
     // an unprepared reservation whose members live dispatch can no longer use.
     if (
@@ -223,6 +238,8 @@ export async function reserveRestoredSubagentControllerSources(
     if (
       !isSubagentObligationRetired(entry) &&
       entry.expectsCompletionMessage === true &&
+      // Interrupted terminal delivery is reserved by recovery after reconciliation.
+      entry.terminalOwner !== "interrupted-recovery" &&
       !hasRequesterCompletionCohort(entry) &&
       (entry.delivery?.status === "pending" || entry.delivery?.status === "in_progress") &&
       (entry.delivery.nextAttemptAt ?? 0) <= Date.now()
@@ -315,6 +332,24 @@ export async function reserveRestoredSubagentControllerSources(
           currentBatch.length === batch.length ? selectWakeOwner(currentBatch, wake) : undefined;
         if (!current) {
           return undefined;
+        }
+        if (!pause) {
+          const descendants = await createRequesterDescendantReader({
+            requesterSessionKey: current.requesterSessionKey,
+            requesterAgentId: current.requesterAgentId,
+            requesterStorePath: current.requesterStorePath ?? null,
+            settledEntry: current,
+            settledBefore: Math.min(...currentBatch.map((member) => member.createdAt)),
+            rootRunIds: new Set(wake.batchRunIds),
+            isSourceCurrent: () =>
+              currentBatch.every(
+                (member) => getCurrentSubagentRunOwner(subagentRuns, member) === member,
+              ),
+          })();
+          assertCurrent?.();
+          if (!descendants || waitForRequesterDescendants(descendants, true)) {
+            return undefined;
+          }
         }
         const caller = Object.freeze({
           deliveryRoute:

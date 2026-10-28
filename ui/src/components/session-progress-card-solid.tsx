@@ -1,8 +1,15 @@
 import type { ProgressCard, SessionRunStatus } from "@openclaw/gateway-protocol";
 import { createMemo, createUniqueId, onSettled, Show } from "solid-js";
 import { i18nRevision, t } from "../lib/reactive/i18n.ts";
+import type { SessionProgressCardRuntime } from "../lib/session-progress-runtime.ts";
+import { animateDetailsSection, DETAILS_SECTION_MOTION } from "./details-section-motion.ts";
 import { toSanitizedMarkdownHtml } from "./markdown.ts";
-import { CardActivity, StepMarker, Steps } from "./session-progress-card-content.tsx";
+import {
+  CardActivity,
+  ProgressRuntime,
+  StepMarker,
+  Steps,
+} from "./session-progress-card-content.tsx";
 import { ProgressCardMarkdown } from "./session-progress-card-view.tsx";
 import {
   progressCardNoteSummary,
@@ -31,6 +38,7 @@ export type SessionProgressCardProps = {
   startedAt?: number;
   endedAt?: number;
   hasActiveRun?: boolean;
+  runtime?: SessionProgressCardRuntime;
   collapseComposerByDefault?: boolean;
   composerDisclosureContext?: ComposerProgressDisclosureContext;
   refreshAction?: SessionProgressCardRefreshAction;
@@ -241,20 +249,31 @@ function cardPresentation(props: ProgressDetailsContentProps) {
       props.startedAt,
       props.endedAt,
       props.hasActiveRun ?? true,
+      props.runtime,
     );
   });
 }
 
 export type ProgressDetailsContentProps = Pick<
   CardProps,
-  "card" | "sessionStatus" | "startedAt" | "endedAt" | "hasActiveRun"
+  "card" | "sessionStatus" | "startedAt" | "endedAt" | "hasActiveRun" | "runtime"
 >;
 
 /** The same saved plan and native step states, without composer or board chrome. */
-export function ProgressDetailsContent(props: ProgressDetailsContentProps) {
+export function ProgressDetailsContent(
+  props: ProgressDetailsContentProps & { hideRuntime?: boolean },
+) {
   const view = cardPresentation(props);
   return (
     <div class="task-progress-details__plan" data-has-steps={Boolean(props.card.steps?.length)}>
+      <Show when={!props.hideRuntime}>
+        <ProgressRuntime
+          runtime={props.runtime}
+          hasActiveRun={props.hasActiveRun}
+          sessionStatus={props.sessionStatus}
+          terminalOutcome={view().runOutcome}
+        />
+      </Show>
       <ProgressCardMarkdown markdown={props.card.markdown} />
       <Steps
         card={props.card}
@@ -366,23 +385,37 @@ function DetailsCard(props: CardProps) {
   ]);
   let element: HTMLDetailsElement;
   let body: HTMLDivElement;
+  let content: HTMLDivElement;
   let animation: Animation | undefined;
+  let shellAnimation: Animation | undefined;
   const finishMotion = () => {
-    if (!animation) {
+    if (!props.desktopDetails) {
       return;
     }
-    animation.cancel();
+    animation?.cancel();
+    shellAnimation?.cancel();
     animation = undefined;
+    shellAnimation = undefined;
     element.removeAttribute("data-details-moving");
     body.inert = false;
+    body.style.height = "";
+    body.style.overflow = "";
+    body.style.opacity = "";
+    body.style.marginTop = "";
   };
   const toggle = (event: MouseEvent) => {
     if (!props.desktopDetails) {
       disclosure.onClick(event);
       return;
     }
-    const from = element.getBoundingClientRect().height;
+    const fromShell = element.getBoundingClientRect().height;
     const wasOpen = element.open;
+    const style = getComputedStyle(body);
+    const from = {
+      height: wasOpen || animation ? body.getBoundingClientRect().height : 0,
+      opacity: wasOpen || animation ? style.opacity : "0",
+      marginTop: wasOpen || animation ? style.marginTop : "0px",
+    };
     disclosure.onClick(event);
     if (element.open === wasOpen) {
       return;
@@ -393,18 +426,23 @@ function DetailsCard(props: CardProps) {
     if (event.detail === 0) {
       return;
     }
-    const to = element.getBoundingClientRect().height;
+    const expanded = element.open;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    element.setAttribute("data-details-moving", "");
+    body.inert = !expanded;
+    const height = expanded ? content.getBoundingClientRect().height : 0;
+    body.style.height = `${height}px`;
+    body.style.overflow = "hidden";
+    body.style.opacity = expanded ? "1" : "0";
+    body.style.marginTop = expanded ? "2px" : "0px";
     if (!reduced) {
-      element.setAttribute("data-details-moving", "");
-      body.inert = !element.open;
+      // The collapsed summary has a second row; include that change in the same layout motion.
+      shellAnimation = element.animate(
+        [{ height: `${fromShell}px` }, { height: `${element.getBoundingClientRect().height}px` }],
+        DETAILS_SECTION_MOTION,
+      );
     }
-    animation = element.animate(
-      reduced
-        ? [{ opacity: 0.7 }, { opacity: 1 }]
-        : [{ height: `${from}px` }, { height: `${to}px` }],
-      { duration: reduced ? 100 : 300, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
-    );
+    animation = animateDetailsSection(body, { from, height, expanded, reduced });
     animation.onfinish = finishMotion;
   };
   function PresentedMotion() {
@@ -485,6 +523,12 @@ function DetailsCard(props: CardProps) {
           </span>
           <CardMenu {...props} />
         </span>
+        <ProgressRuntime
+          runtime={props.runtime}
+          hasActiveRun={props.hasActiveRun}
+          sessionStatus={props.sessionStatus}
+          terminalOutcome={view().runOutcome}
+        />
         <ProgressDetailsRefreshStatus
           card={props.card}
           action={props.refreshAction}
@@ -497,8 +541,11 @@ function DetailsCard(props: CardProps) {
           disclosure.body(value);
         }}
         class="task-progress-details__body"
+        onFocusIn={finishMotion}
       >
-        <ProgressDetailsContent {...props} />
+        <div ref={(value) => (content = value)} class="task-progress-details__content">
+          <ProgressDetailsContent {...props} hideRuntime />
+        </div>
       </div>
     </details>
   );
@@ -538,12 +585,11 @@ function ComposerCard(props: CardProps) {
           class={[
             "session-progress-card__summary-indicator session-progress-card__current-marker",
             {
-              "session-progress-card__summary-indicator--complete":
-                view().complete || view().effectiveSessionStatus === "done",
+              "session-progress-card__summary-indicator--complete": view().complete,
             },
           ]}
           data-status={view().presentedCurrentStatus ?? "pending"}
-          data-outcome={view().effectiveSessionStatus}
+          data-outcome={view().terminalOutcome ? view().effectiveSessionStatus : undefined}
           aria-hidden="true"
         >
           <StepMarker
@@ -563,7 +609,7 @@ function ComposerCard(props: CardProps) {
         <Show when={view().counts}>
           <span
             class="session-progress-card__summary-count session-progress-card__summary-count--collapsed"
-            data-outcome={view().effectiveSessionStatus}
+            data-outcome={view().terminalOutcome ? view().effectiveSessionStatus : undefined}
           >
             {view().outcomeLabel ?? `${view().currentPosition}/${view().counts?.total}`}
           </span>
@@ -585,6 +631,12 @@ function ComposerCard(props: CardProps) {
             <Icon name="chevronDown" />
           </span>
         </span>
+        <ProgressRuntime
+          runtime={props.runtime}
+          hasActiveRun={props.hasActiveRun}
+          sessionStatus={props.sessionStatus}
+          terminalOutcome={view().runOutcome}
+        />
         <Show when={props.refreshAction?.state}>
           {(state) => (
             <span class="session-progress-card__refresh-status" data-state={state()} role="status">
@@ -625,6 +677,12 @@ function BoardCard(props: CardProps) {
           <CardAction card={props.card} onAction={props.onDismiss} />
         </span>
       </div>
+      <ProgressRuntime
+        runtime={props.runtime}
+        hasActiveRun={props.hasActiveRun}
+        sessionStatus={props.sessionStatus}
+        terminalOutcome={view().runOutcome}
+      />
       <div class="session-progress-card__body">
         <ProgressCardMarkdown markdown={props.card.markdown} />
         <Steps

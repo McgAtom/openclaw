@@ -43,6 +43,10 @@ Runtime discovery uses the environment inherited when the CLI starts, before
 OpenClaw loads any `.env` file. Configure version-manager roots in your shell environment;
 workspace `.env` values cannot select a Node executable for recovery.
 
+On Windows, Node discovery accepts double-quoted absolute PATH directories such
+as `"C:\Program Files\nodejs"`, including a trailing semicolon. You do not need
+to remove those quotes to recover the CLI or discover Node when running under Bun.
+
 Home-relative service and version-manager paths expand `~` against inherited
 `HOME` or `USERPROFILE`. Service paths use that home even when `OPENCLAW_HOME`
 selects a different private-runtime home. Bare relative paths and service or
@@ -162,7 +166,7 @@ fnm use 26
 ```
 
   <Warning>
-  Initialize your version manager in your shell startup file (`~/.zshrc` or `~/.bashrc`). If you skip this, `openclaw` may not be found in new terminal sessions because PATH won't include Node's bin directory.
+  Initialize your version manager in your shell startup file (`${ZDOTDIR:-$HOME}/.zshrc` for zsh or `~/.bashrc` for Bash). If you skip this, `openclaw` may not be found in new terminal sessions because PATH won't include Node's bin directory.
   </Warning>
 </Accordion>
 
@@ -199,7 +203,7 @@ This almost always means npm's global bin directory isn't on your PATH.
   <Step title="Add it to your shell startup file">
     <Tabs>
       <Tab title="macOS / Linux">
-        Add to `~/.zshrc` or `~/.bashrc`:
+        Add to `${ZDOTDIR:-$HOME}/.zshrc` for zsh or `~/.bashrc` for Bash:
 
         ```bash
         export PATH="$(npm prefix -g)/bin:$PATH"
@@ -225,7 +229,7 @@ npm config set prefix "$HOME/.npm-global"
 export PATH="$HOME/.npm-global/bin:$PATH"
 ```
 
-Add the `export PATH=...` line to your `~/.bashrc` or `~/.zshrc` to make it permanent.
+Add the `export PATH=...` line to `~/.bashrc` for Bash or `${ZDOTDIR:-$HOME}/.zshrc` for zsh to make it permanent.
 
 ## Related
 

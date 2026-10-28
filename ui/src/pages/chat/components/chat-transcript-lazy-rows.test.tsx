@@ -22,6 +22,40 @@ function row(key: string, view: NativeTranscriptView): TestContentRow {
 const group = (role: "user" | "assistant", content: string, timestamp: number) =>
   createMessageGroup({ role, content, timestamp }, role);
 
+it("commits a cached run's message body with its row shell", async () => {
+  const answer = createMessageGroup(
+    { role: "assistant", content: "The cached run answer", timestamp: 3 },
+    "assistant",
+  );
+  const mounting = mountTestTranscript("cached-run-first-frame", [
+    row("run:cached", {
+      kind: "frame",
+      frame: {
+        kind: "agent-run-frame",
+        key: "run:cached",
+        runId: "cached",
+        boundaryId: "boundary",
+        outcome: { kind: "completed", actionOwner: answer.messages[0]! },
+        parts: [answer],
+      },
+      options: {
+        streamOptions: {},
+        renderGroupOptions: () => ({ showReasoning: false }),
+        isWorkExpanded: () => false,
+        onToggleWork: () => {},
+      },
+    }),
+  ]);
+  // The helper renders synchronously before waiting for deferred row cleanup.
+  const firstCommit = document.querySelector(".chat-virtual-row")?.textContent;
+  const view = await mounting;
+  try {
+    expect(firstCommit).toContain("The cached run answer");
+  } finally {
+    view.transcript.dispose();
+  }
+});
+
 it("loads stream and run rows without losing the adjacent message or the latest snapshot", async () => {
   const message = group("user", "Keep this message", 1);
   const groupOptions = { showReasoning: false, onReply: () => {} };

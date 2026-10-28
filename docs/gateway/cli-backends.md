@@ -18,6 +18,8 @@ With Claude CLI, a successful `sessions_yield` closes the current subprocess aft
 its tool result is consumed and suppresses later reply text. The next child-completion
 turn resumes the same saved Claude session in a new subprocess. This avoids recording
 the yield as a user interruption; it adds process startup time after a yield.
+An intentional yield is not a failed completion and does not trigger model fallback,
+even when it has no final answer. Genuine CLI failures remain eligible for fallback.
 
 A CLI backend can be an agent's primary runtime or a fallback. Choosing **Claude CLI** during onboarding keeps `anthropic/*` model refs and runs them through Claude Code. For ACP session controls, background tasks, thread/conversation binding, and persistent external coding sessions, use [ACP Agents](/tools/acp-agents) instead. CLI backends are not ACP.
 
@@ -292,8 +294,9 @@ Plugin tools such as remote SSH do not become background jobs automatically.
 When Claude Code moves a foreground Bash command to the background after its tool timeout,
 OpenClaw keeps the turn active until Claude processes the completion and returns its final answer.
 Stopping a native task releases that task's hold. Completions belonging to an earlier
-input do not hold or settle a newer input. Tasks launched inside a subagent report back
-to that subagent and do not independently hold the parent input open.
+input do not hold or settle a newer input. Nested Agent and Workflow completions stay
+within their running parent; if that background parent ends first, the turn waits for
+the forwarded result.
 Follow-up tools still require the current turn's host permissions. Commands started explicitly
 in the background do not hold the turn open. If the turn fails or is cancelled while one of these
 commands still needs a follow-up, OpenClaw closes that subprocess and starts a fresh one for the next turn.
@@ -775,6 +778,8 @@ TCP connection.
 The shared listener remains available after the turn that first started it completes.
 Later calls use their own run's permissions and caller liveness, without retaining
 the starting turn's transcript read fence or request scope.
+If the listener closes unexpectedly, its grants are retired and the next CLI run
+starts a replacement. A warning records the closure in the Gateway log.
 The listener retains the Gateway's process broker and database-reader lifecycle.
 After plugin replacement, new CLI turns resolve bridge tools against the current
 plugin generation without restarting the listener. Retired plugin instances remain

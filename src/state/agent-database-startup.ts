@@ -1,6 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { GATEWAY_STARTUP_ADMISSION_WAIT_MS } from "../../packages/gateway-protocol/src/startup-unavailable.js";
-import { raceWithTimeout } from "../../packages/retry/src/index.js";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { sleepWithAbort } from "../infra/backoff.js";
@@ -17,15 +15,12 @@ import { schemaAdmission } from "../infra/sqlite-schema-admission.js";
 import { isSqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { normalizeAgentId } from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createPermitPool } from "../shared/permit-pool.js";
 import { AgentDatabaseSchemaAdmissionChangedError } from "./agent-database-admission-error.js";
 import {
-  AgentDatabaseAdmissionError,
-  assertAgentDatabaseAdmitted,
   createAgentDatabaseInspectionRefusal,
   failPendingAgentDatabase,
   listAgentDatabaseAdmissionRefusals,
@@ -36,7 +31,14 @@ import {
   type AgentDatabaseAdmissionRefusal,
 } from "./agent-database-admission.js";
 import { withAgentDatabasePreparationContext } from "./agent-database-preparation-context.js";
+import { prepareAgentDatabaseStartupVerification } from "./agent-database-startup-integrity.js";
+import {
+  createAgentDatabaseStartupObservation,
+  recoveryTiming,
+} from "./agent-database-startup-observation.js";
 import type {
+  PreparedSchemaHeader,
+  PreparedSchemaHeaders,
   PendingAgentDatabaseInspection as PendingInspection,
   AgentDatabaseStartupActivation as Activation,
   AgentDatabaseStartupPreparationPhase as PreparationPhase,
@@ -52,33 +54,11 @@ import {
   createOpenClawAgentDatabasePathMatcher,
   isSameOpenClawAgentDatabasePath,
 } from "./openclaw-agent-db.paths.js";
-import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
 import type { OpenClawDatabaseSchemaPreflight } from "./openclaw-database-preflight.types.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
 const PREPARATION_PROGRESS_INTERVAL_MS = 60_000;
 const STARTUP_PUBLICATION_ATTEMPTS = 4;
-
-function recoveryTiming(recovery: PendingRecovery, now = performance.now()) {
-  return {
-    elapsedMs: Math.round(now - recovery.startedAt),
-    phaseDurationsMs: {
-      ...recovery.phaseDurationsMs,
-      [recovery.phase]: Math.round(
-        (recovery.phaseDurationsMs[recovery.phase] ?? 0) + now - recovery.phaseStartedAt,
-      ),
-    },
-  };
-}
-type PreparedSchemaHeader = Pick<
-  AgentSchemaInspection,
-  "version" | "writerAppVersion" | "agentSchemaMeta"
->;
-type PreparedSchemaHeaders = {
-  statePath: string;
-  headers: Map<string, PreparedSchemaHeader>;
-  state?: { identity: string; schemaAdmissionId: string };
-};
 
 function matchesInspectionPath(
   paths: readonly string[],
@@ -113,6 +93,7 @@ class AgentDatabaseStartupAdmission {
   private readonly activation = createDeferredCore<Activation | undefined>();
   private readonly work = new Set<Promise<unknown>>();
   private readonly pending = new Map<string, PendingRecovery>();
+  readonly observation = createAgentDatabaseStartupObservation(this.pending, this.signal);
   private adopted = false;
   private activated = false;
   private stopped = false;
@@ -122,6 +103,7 @@ class AgentDatabaseStartupAdmission {
   private progressTimer?: ReturnType<typeof setInterval>;
   private readonly opening = createPermitPool(AGENT_DATABASE_PREFLIGHT_CONCURRENCY);
   private readonly migrating = createPermitPool(AGENT_DATABASE_PREPARATION_CONCURRENCY);
+  private readonly verifying = createPermitPool(2);
   // Readiness releases the whole fleet; leave room for other shared-state readers.
   private readonly journalReads = createPermitPool(8);
   private preparedSchemaHeaders?: PreparedSchemaHeaders;
@@ -243,37 +225,9 @@ class AgentDatabaseStartupAdmission {
     return this.pending.size > 0;
   }
 
-  /** Join only the current agent preparation, without holding channel startup or healthy agents. */
-  waitForAgentPreparation(
-    agentId: string,
-    options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal; forWrite?: boolean } = {},
-  ): Promise<void> | undefined {
-    const pending = this.pending.get(normalizeAgentId(agentId));
-    if (!pending || readAgentDatabaseAdmissionRefusal(agentId, options) !== pending.refusal) {
-      return undefined;
-    }
-    const signal = options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal;
-    if (!options.forWrite) {
-      const readiness = options.forWrite === false ? pending.readReady : pending.completion;
-      return readiness && racePromiseWithAbortSignal(readiness, signal);
-    }
-    // Allow five minutes for slow-host startup, plus a minute per queued inspection batch.
-    const timeoutMs =
-      GATEWAY_STARTUP_ADMISSION_WAIT_MS +
-      Math.ceil(this.pending.size / AGENT_DATABASE_PREFLIGHT_CONCURRENCY) * 60_000;
-    return raceWithTimeout(
-      pending.completion,
-      timeoutMs,
-      () => {
-        throw new AgentDatabaseAdmissionError({
-          ...pending.refusal,
-          repairHint:
-            "This agent is still preparing. Retry the request after background inspection and preparation finish.",
-        });
-      },
-      { signal, ref: false },
-    ).then(() => assertAgentDatabaseAdmitted(agentId, options));
-  }
+  readonly waitForAgentPreparation = this.observation.waitForAgentPreparation.bind(
+    this.observation,
+  );
 
   track(work: Promise<unknown>): void {
     this.work.add(work);
@@ -372,6 +326,7 @@ class AgentDatabaseStartupAdmission {
       const startedAt = performance.now();
       const completion = createDeferredCore();
       const readReady = createDeferredCore();
+      const inputReady = createDeferredCore();
       const recovery: PendingRecovery = {
         refusal,
         completion: completion.promise,
@@ -380,6 +335,15 @@ class AgentDatabaseStartupAdmission {
         phase: "inspection",
         phaseStartedAt: startedAt,
         phaseDurationsMs: {},
+      };
+      const finishInputs = () => {
+        inputReady.resolve();
+        if (this.pending.get(agentId) === recovery) {
+          this.pending.delete(agentId);
+        }
+        if (this.pending.size === 0) {
+          this.clearProgress();
+        }
       };
       const phase = (name: PreparationPhase) => {
         const now = performance.now();
@@ -403,8 +367,13 @@ class AgentDatabaseStartupAdmission {
       const checked = Promise.allSettled(inspections.map(({ result }) => result));
       // Gateway-owned recovery outlives the caller's temporary discovery snapshot.
       const work = runInDetachedAsyncContext(async () => {
-        const preparation: { maintenance?: () => Promise<void> } = {};
+        const preparation: {
+          maintenance?: () => Promise<void>;
+          recoverInputs?: () => Promise<void>;
+        } = {};
         let revokeReadAdmission: (() => void) | undefined;
+        let integrity: ReturnType<typeof prepareAgentDatabaseStartupVerification>;
+        let preparedSuccessfully = false;
         try {
           const results = await checked;
           phase("activation");
@@ -490,6 +459,13 @@ class AgentDatabaseStartupAdmission {
           phase("readiness");
           await racePromiseWithAbortSignal(activation.preparationReady, this.signal);
           assertCurrent();
+          if (canReadBeforeOpen) {
+            integrity = prepareAgentDatabaseStartupVerification(
+              { agentId, paths, env, signal: this.signal },
+              activation,
+              this.verifying,
+            );
+          }
           await withSqliteReadOnlyWorkerScope(
             async () => {
               await assertNotDeleted();
@@ -620,6 +596,11 @@ class AgentDatabaseStartupAdmission {
                     phase("migration");
                     const migrated = await activation.migrateAgent(input);
                     preparation.maintenance = migrated ? migrated.maintain : undefined;
+                    preparation.recoverInputs = migrated ? migrated.recoverInputs : undefined;
+                    // Install input readiness before native write admission is published.
+                    recovery.inputReady = preparation.recoverInputs
+                      ? inputReady.promise
+                      : undefined;
                   } finally {
                     releaseMigration?.();
                   }
@@ -638,6 +619,7 @@ class AgentDatabaseStartupAdmission {
             paths,
             ...recoveryTiming(recovery),
           });
+          preparedSuccessfully = true;
         } catch (error) {
           if (!this.stopped) {
             const reason = formatErrorMessage(error);
@@ -651,18 +633,44 @@ class AgentDatabaseStartupAdmission {
             });
           }
         } finally {
+          if (!preparedSuccessfully) {
+            integrity?.revoke();
+          }
           revokeReadAdmission?.();
-          if (this.pending.get(agentId) === recovery) {
-            this.pending.delete(agentId);
-          }
-          if (this.pending.size === 0) {
-            this.clearProgress();
-          }
           if (this.publishingAgentId === agentId) {
             this.publishingAgentId = undefined;
           }
           readReady.resolve();
           completion.resolve();
+          if (
+            !preparation.recoverInputs ||
+            this.stopped ||
+            readAgentDatabaseAdmissionRefusal(agentId, { env })
+          ) {
+            finishInputs();
+          }
+        }
+        if (preparedSuccessfully && integrity) {
+          this.track(runInDetachedAsyncContext(integrity.verify));
+        }
+        try {
+          // Recovery enters ordinary queues after the temporary database borrow has ended.
+          // Its failure must not turn an admitted database into an inspection refusal.
+          if (!readAgentDatabaseAdmissionRefusal(agentId, { env }) && !this.stopped) {
+            if (preparation.recoverInputs) {
+              phase("input-recovery");
+              await preparation.recoverInputs();
+            }
+          }
+        } catch (error) {
+          if (!this.stopped) {
+            log.warn("agent restart input recovery failed", {
+              agentId,
+              reason: formatErrorMessage(error),
+            });
+          }
+        } finally {
+          finishInputs();
         }
         // End the admission borrow and publication turn before advisory repair.
         if (!readAgentDatabaseAdmissionRefusal(agentId, { env }) && !this.stopped) {
@@ -735,7 +743,7 @@ export async function withAgentDatabaseStartupAdmission<T>(
   try {
     return await startupAdmission.run(admission, () =>
       withAgentDatabasePreparationContext(
-        () => admission,
+        () => admission.observation,
         () => run(admission),
       ),
     );

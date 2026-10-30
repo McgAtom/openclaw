@@ -35,6 +35,7 @@ import {
   SECTION_CATEGORIES,
   type SectionCategory,
 } from "./view-navigation.tsx";
+import { rawSecretsLabel } from "./view-raw-secrets.ts";
 import { ConfigReadBoundary, ConfigReadError, ConfigReadLoading } from "./view-readiness.tsx";
 import {
   asConfigSchema,
@@ -82,12 +83,10 @@ export function Config(props: ConfigProps) {
     return props.viewState;
   };
   const schema = createMemo(() => asConfigSchema(props.schema));
-  const includedSections = createMemo(() =>
-    props.includeSections?.length ? new Set(props.includeSections) : null,
-  );
-  const excludedSections = createMemo(() =>
-    props.excludeSections?.length ? new Set(props.excludeSections) : null,
-  );
+  const include = createMemo(() => props.includeSections);
+  const exclude = createMemo(() => props.excludeSections);
+  const includedSections = createMemo(() => (include()?.length ? new Set(include()) : null));
+  const excludedSections = createMemo(() => (exclude()?.length ? new Set(exclude()) : null));
   const schemaAnalysis = createMemo(() =>
     getConfigSchemaAnalysis(schema(), includedSections(), excludedSections()),
   );
@@ -399,13 +398,7 @@ export function Config(props: ConfigProps) {
                 {sensitiveCount() > 0 ? (
                   <>
                     <span class="settings-count">
-                      {t(
-                        sensitiveCount() === 1
-                          ? "configView.secretCount"
-                          : "configView.secretCountPlural",
-                        { count: String(sensitiveCount()) },
-                      )}{" "}
-                      {t(view().rawRevealed ? "configView.visible" : "configView.redacted")}
+                      {rawSecretsLabel(sensitiveCount(), view().rawRevealed, props.raw)}
                     </span>
                     <openclaw-tooltip
                       prop:content={t(

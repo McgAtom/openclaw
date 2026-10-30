@@ -549,9 +549,6 @@ it.for([
         expect(fs.readFileSync(agentPath)).toEqual(agentBytes);
       } else if (outcome === "recover" || outcome === "superseded") {
         if (outcome === "recover") {
-          if (holdSubagentRestoration) {
-            await withinTest(restorationEntered.promise, signal);
-          }
           chatClient = await connectWebchatClient({ port });
           gatewayReplyMock.mockImplementationOnce(async () => {
             dispatched.resolve();

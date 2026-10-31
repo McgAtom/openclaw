@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative as relativePath } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readStandaloneInstaller } from "../../scripts/lib/standalone-installers.mjs";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
@@ -676,6 +676,8 @@ fi
   it.each([
     { input: "environment", method: "npm" },
     { input: "literal tilde", method: "git" },
+    { input: "shell metacharacters", method: "npm" },
+    { input: "shell metacharacters", method: "git" },
   ] as const)(
     "keeps a generated $method launcher working after $input supplied paths change cwd",
     ({ input, method }) => {
@@ -683,8 +685,10 @@ fi
       const home = join(f.root, "home"),
         installRoot = join(f.root, "install-root");
       const tilde = input === "literal tilde";
-      const prefix = join(tilde ? home : installRoot, "openclaw-local");
-      const repo = join(tilde ? home : installRoot, "openclaw-source");
+      const name =
+        input === "shell metacharacters" ? "openclaw ' \" $cash `pwd` \\ literal" : "openclaw";
+      const prefix = join(tilde ? home : installRoot, `${name}-local`);
+      const repo = join(tilde ? home : installRoot, `${name}-source`);
       const nodeDir = join(prefix, "tools", "node-v24.22.1");
       const legacy = join(home, "openclaw", "Peekaboo", "user.txt");
       for (const dir of [
@@ -698,7 +702,7 @@ fi
       }
       writeFileSync(legacy, "keep this checkout");
       f.runtime(
-        `${tilde ? "home" : "install-root"}/openclaw-local/tools/node-v24.22.1/bin`,
+        relativePath(f.root, join(nodeDir, "bin")),
         'if [[ "$1" == "--version" ]]; then printf "11.15.0\\n"; elif [[ "$1" == "config" ]]; then printf "null\\n"; fi',
       );
       symlinkSync("node-v24.22.1", join(prefix, "tools", "node"));
@@ -707,7 +711,10 @@ fi
         join(repo, "dist/entry.js"),
       ]) {
         mkdirSync(dirname(entry), { recursive: true });
-        writeFileSync(entry, 'console.log("fixture cli");\n');
+        writeFileSync(
+          entry,
+          'require("node:fs").writeFileSync(process.env.TARGET_ARGV, JSON.stringify(process.argv.slice(2))); console.log("fixture cli");\n',
+        );
       }
       const result = runShell(
         `
@@ -727,19 +734,26 @@ fi
         }
         main --${method} ${tilde ? '--prefix "~/openclaw-local" --git-dir "~/openclaw-source"' : ""}
         cd "$ROOT/other-root"
-        "${prefix}/bin/openclaw" --version
+        "$TARGET_PREFIX/bin/openclaw" --version "argument with spaces" 'literal$argument'
       `,
         {
           ROOT: f.root,
           HOME: home,
           OPENCLAW_HOME: home,
-          OPENCLAW_GIT_DIR: undefined,
-          OPENCLAW_PREFIX: tilde ? undefined : "openclaw-local",
+          OPENCLAW_GIT_DIR: tilde ? undefined : `${name}-source`,
+          OPENCLAW_PREFIX: tilde ? undefined : `${name}-local`,
+          TARGET_PREFIX: prefix,
+          TARGET_ARGV: join(f.root, "target-argv.json"),
         },
       );
       expect(result.status, result.stderr || result.stdout).toBe(0);
       expect(readFileSync(legacy, "utf8")).toBe("keep this checkout");
       expect(result.stdout.trim().split("\n").at(-1)).toBe("fixture cli");
+      expect(JSON.parse(readFileSync(join(f.root, "target-argv.json"), "utf8"))).toEqual([
+        "--version",
+        "argument with spaces",
+        "literal$argument",
+      ]);
     },
   );
 
